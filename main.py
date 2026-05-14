@@ -195,6 +195,7 @@ async def check_maintenance(user_id: int, message: types.Message = None, callbac
     return False
 
 # ================= SMART OTP EXTRACTOR =================
+group_processed_otps = deque(maxlen=5000)
 user_processed_otps = deque(maxlen=5000)
 CURRENT_OTP_LOGS = []
 
@@ -307,10 +308,15 @@ async def fetch_one_number(range_val: str, attempt: int = 0):
         return await fetch_one_number(range_val, attempt=attempt+1)
     return None
 
+# ফিক্স: রেঞ্জের নাম্বারগুলো একটার পর একটা (Sequential) আনা হবে, যাতে প্যানেল ব্লক না করে
 async def fetch_numbers_by_range(range_val: str, limit: int = 2):
-    tasks = [fetch_one_number(range_val) for _ in range(limit)]
-    results = await asyncio.gather(*tasks)
-    return [res for res in results if res]
+    results = []
+    for _ in range(limit):
+        res = await fetch_one_number(range_val)
+        if res and res not in results:
+            results.append(res)
+        await asyncio.sleep(0.5)
+    return results
 
 # ================= BACKGROUND TASKS (MASTER OTP FETCHER) =================
 async def master_otp_fetcher():
@@ -1188,7 +1194,10 @@ async def manual_country_selected(callback: types.CallbackQuery):
     builder.row(types.InlineKeyboardButton(text="♻️ 𝑪𝑯𝑨𝑵𝑮𝑬 𝑵𝑼𝑴𝑩𝑬𝑹", callback_data=f"man_change_{svc_id}"), types.InlineKeyboardButton(text="🌍 𝑪𝑯𝑨𝑵𝑮𝑬 𝑪𝑶𝑼𝑵𝑻𝑹𝒀", callback_data=f"manual_svc_{svc_name}"))
     builder.row(types.InlineKeyboardButton(text="💬 𝑶𝑻𝑷 𝑮𝑹𝑶𝑼𝑷", url=OTP_GROUP_LINK))
     
-    await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    # ⏳ Fetching number মেসেজ এডিট করার সিস্টেম (যাতে হ্যাং না হয়)
+    try: await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    except: await callback.message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    
     asyncio.create_task(poll_for_otp(uid, nums, duration_sec=1200, is_manual=True))
 
 @dp.callback_query(F.data.startswith("man_change_"))
@@ -1273,7 +1282,10 @@ async def man_change_numbers(callback: types.CallbackQuery):
     builder.row(types.InlineKeyboardButton(text="♻️ 𝑪𝑯𝑨𝑵𝑮𝑬 𝑵𝑼𝑴𝑩𝑬𝑹", callback_data=f"man_change_{svc_id}"), types.InlineKeyboardButton(text="🌍 𝑪𝑯𝑨𝑵𝑮𝑬 𝑪𝑶𝑼𝑵𝑻𝑹𝒀", callback_data=f"manual_svc_{svc_name}"))
     builder.row(types.InlineKeyboardButton(text="💬 𝑶𝑻𝑷 𝑮𝑹𝑶𝑼𝑷", url=OTP_GROUP_LINK))
     
-    await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    # ⏳ Fetching number মেসেজ এডিট করার সিস্টেম (যাতে হ্যাং না হয়)
+    try: await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    except: await callback.message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    
     await callback.answer("নাম্বার সফলভাবে পরিবর্তন হয়েছে!", show_alert=False)
     asyncio.create_task(poll_for_otp(uid, new_nums, duration_sec=1200, is_manual=True))
 
@@ -1300,14 +1312,22 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     row = cursor.execute("SELECT name, flag, country_code FROM services WHERE range_val=?", (range_val,)).fetchone()
     
     if isinstance(callback_or_msg, types.CallbackQuery):
-        await callback_or_msg.answer(f"⏳ Fetching number...")
         target_message = callback_or_msg.message
+        await callback_or_msg.answer(f"⏳ Fetching number...")
     else:
         target_message = await callback_or_msg.answer("⏳ Fetching number...")
 
-    numbers = await fetch_numbers_by_range(range_val, limit=limit)
+    # ফিক্স: রেঞ্জের নাম্বারগুলো একটার পর একটা (Sequential) আনা হবে
+    numbers = []
+    for _ in range(limit):
+        res = await fetch_one_number(range_val)
+        if res and res not in numbers:
+            numbers.append(res)
+        await asyncio.sleep(0.5)
+
     if not numbers:
-        await target_message.edit_text(f"❌ Could not fetch numbers for `{range_val}`. Try again.")
+        try: await target_message.edit_text(f"❌ Could not fetch numbers for `{range_val}`. Try again.")
+        except: pass
         return None
 
     if row: name, flag, country_code = row
@@ -1326,13 +1346,15 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
         types.InlineKeyboardButton(text="💬 𝑮𝑬𝑻 𝑶𝑻𝑷", url=OTP_GROUP_LINK)
     )
 
-    try: await target_message.delete()
-    except: pass
-
-    if isinstance(callback_or_msg, types.CallbackQuery):
-        sent = await callback_or_msg.message.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
-    else:
-        sent = await callback_or_msg.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
+    try: 
+        sent = await target_message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
+    except Exception: 
+        try: await target_message.delete()
+        except: pass
+        if isinstance(callback_or_msg, types.CallbackQuery):
+            sent = await callback_or_msg.message.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
+        else:
+            sent = await callback_or_msg.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
 
     asyncio.create_task(poll_for_otp(sent.chat.id, [p[1] for p in numbers], duration_sec=300, is_manual=False))
     return sent
@@ -1354,7 +1376,6 @@ dp.shutdown.register(on_shutdown)
 async def on_startup():
     asyncio.create_task(master_otp_fetcher())
     asyncio.create_task(process_manual_expiry())
-    # asyncio.create_task(global_group_otp_monitor())  # <-- (রিমুভ করা হয়েছে যাতে গ্রুপে মেসেজ না যায়)
 
 dp.startup.register(on_startup)
 
