@@ -170,16 +170,11 @@ COUNTRY_PREFIXES = {
 
 def get_country_from_phone(phone: str) -> tuple:
     digits = ''.join(filter(str.isdigit, phone))
-    if not digits: return "BD", "🇧🇩"
+    if not digits: return "GLOBAL", "🌍"
     for length in range(5, 0, -1):
-        prefix = digits[:length]
-        if prefix in COUNTRY_PREFIXES:
-            return COUNTRY_PREFIXES[prefix]
-    for length in range(3, 0, -1):
-        prefix = digits[:length]
-        if prefix in COUNTRY_PREFIXES:
-            return COUNTRY_PREFIXES[prefix]
-    return "BD", "🇧🇩"
+        if digits[:length] in COUNTRY_PREFIXES:
+            return COUNTRY_PREFIXES[digits[:length]]
+    return "GLOBAL", "🌍"
 
 def format_number_with_flag(phone: str) -> str:
     _, flag = get_country_from_phone(phone)
@@ -220,7 +215,6 @@ def extract_otp(message):
     if not message: return None
     message_str = str(message).strip().upper()
     
-    # জিরো বা ভুল ডাটা রিজেক্ট
     if message_str in ["0", "00", "000", "0000", "000000", "NULL", "NONE", "WAITING", "PENDING", ""]:
         return None
     
@@ -271,7 +265,7 @@ class WithdrawState(StatesGroup):
     waiting_number = State()
     waiting_amount = State()
 
-# ================= API DATA FETCHING (MASTER FETCHER) =================
+# ================= API DATA FETCHING =================
 http_session = None
 async def get_session():
     global http_session
@@ -287,53 +281,45 @@ async def fetch_api_data(session, url, headers=None, params=None):
     except Exception: pass
     return None
 
-# !!! আপনার দেওয়া অরিজিনাল নাম্বার ফেচিং লজিক (যা পারফেক্ট কাজ করে) !!!
-def parse_number_data(data):
-    if not data: return None
-    num = None
-    if isinstance(data, dict):
-        inner = data.get('data', data)
-        if isinstance(inner, list) and len(inner) > 0:
-            inner = inner[0]
-        if isinstance(inner, dict):
-            num = inner.get('full_number') or inner.get('number') or inner.get('phone') or inner.get('number_raw')
-    elif isinstance(data, list) and len(data) > 0:
-        if isinstance(data[0], dict):
-            num = data[0].get('full_number') or data[0].get('number') or data[0].get('phone') or data[0].get('number_raw')
-    
-    if num:
-        num_str = str(num).replace(' ', '').replace('+', '')
-        return (num_str, num_str) # Tuple রিটার্ন করছে, যেমন আপনি চেয়েছিলেন
-    return None
 
+# ================= হুবহু আপনার দেওয়া অরিজিনাল নাম্বার ফেচিং লজিক =================
 async def fetch_one_number(range_val: str, attempt: int = 0):
     url = f"{API_BASE_URL}/mapi/v1/public/getnum/number"
-    headers = {"mapikey": API_KEY, "Accept": "application/json"}
-    payload = {"range": str(range_val).strip()}
-    
+    headers = {"mapikey": API_KEY, "Content-Type": "application/json"}
+    payload = {"range": range_val}
     try:
         session = await get_session()
-        async with session.get(url, params=payload, headers=headers, timeout=15, ssl=False) as resp:
-            if resp.status == 200:
-                res = parse_number_data(await resp.json())
-                if res: return res
-                
         async with session.post(url, json=payload, headers=headers, timeout=15, ssl=False) as resp:
             if resp.status == 200:
-                res = parse_number_data(await resp.json())
-                if res: return res
-    except Exception: pass
-        
-    if attempt < 2:
-        await asyncio.sleep(2) 
-        return await fetch_one_number(range_val, attempt=attempt+1)
+                data = await resp.json()
+                if isinstance(data, dict):
+                    num_data = data.get('data', {}) if 'data' in data else data
+                    num = num_data.get('full_number') or num_data.get('number') or num_data.get('phone')
+                    if num:
+                        return (str(num), str(num))
+            elif resp.status == 405: # Fallback to GET method if POST is not allowed
+                async with session.get(url, params=payload, headers={"mapikey": API_KEY}, timeout=15, ssl=False) as resp_get:
+                    if resp_get.status == 200:
+                        data = await resp_get.json()
+                        if isinstance(data, dict):
+                            num_data = data.get('data', {}) if 'data' in data else data
+                            num = num_data.get('full_number') or num_data.get('number') or num_data.get('phone')
+                            if num:
+                                return (str(num), str(num))
+        if attempt < 2:
+            await asyncio.sleep(2)
+            return await fetch_one_number(range_val, attempt=attempt+1)
+    except Exception as e:
+        if attempt < 2:
+            await asyncio.sleep(2)
+            return await fetch_one_number(range_val, attempt=attempt+1)
     return None
 
 async def fetch_numbers_by_range(range_val: str, limit: int = 2):
-    # Concurrent Fetching
     tasks = [fetch_one_number(range_val) for _ in range(limit)]
     results = await asyncio.gather(*tasks)
     return [res for res in results if res is not None]
+# ==============================================================================
 
 
 # ================= BACKGROUND TASKS (MASTER OTP FETCHER) =================
@@ -359,6 +345,7 @@ async def master_otp_fetcher():
         
         temp_logs = []
         
+        # Panel 1
         if res_a:
             data_obj = res_a.get("data", [])
             logs = data_obj.get("otps", []) if isinstance(data_obj, dict) else data_obj
@@ -370,6 +357,7 @@ async def master_otp_fetcher():
                         "service": log.get("operator", log.get("service", "FB"))
                     })
                     
+        # Panel 2
         if res_b and res_b.get("status") == "success":
             for log in res_b.get("data", []):
                 temp_logs.append({
@@ -378,6 +366,7 @@ async def master_otp_fetcher():
                     "service": log.get("cli", "FB")
                 })
                 
+        # Panel 3
         if res_c:
             logs_c = res_c.get("aaData") or res_c.get("data") or []
             for row in logs_c:
@@ -393,6 +382,7 @@ async def master_otp_fetcher():
                 sms = re.sub(r'<[^>]+>', '', sms)
                 if phone and sms: temp_logs.append({"phone": phone, "sms": sms, "service": cli})
         
+        # Panel 4
         if res_d:
             logs_d = res_d.get("aaData") or res_d.get("data") or []
             for row in logs_d:
@@ -429,7 +419,7 @@ async def poll_for_otp(chat_id: int, phones: list, duration_sec: int = 300, is_m
                     if p_clean and (p_clean in phone or phone in p_clean):
                         
                         if is_manual:
-                            act = cursor.execute("SELECT active_manual FROM WHERE id=?", (chat_id,)).fetchone()
+                            act = cursor.execute("SELECT active_manual FROM users WHERE id=?", (chat_id,)).fetchone()
                             if act and act[0]:
                                 active = json.loads(act[0])
                                 if p not in active.get("nums", []):
@@ -1336,14 +1326,12 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     else:
         target_message = await callback_or_msg.answer(f"⏳ *Fetching numbers for `{range_val}`...*", parse_mode="Markdown")
 
-    # আপনার অরিজিনাল ফাস্ট Concurrent Fetching 
     tasks = [fetch_one_number(range_val) for _ in range(limit)]
     results = await asyncio.gather(*tasks)
     
     numbers = []
     for res in results:
         if res and res not in numbers:
-            # Tuple হিসেবে রিসিভ করে শুধু ডাটাবেজ চেক করার জন্য ইনডেক্সিং
             numbers.append(res)
 
     if not numbers:
@@ -1351,7 +1339,6 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
         except: pass
         return None
 
-    # Tuple হিসেবে রিটার্ন হওয়ার কারণে index [0][1] নিতে হবে
     if row: name, flag, country_code = row
     else: country_code, flag = get_country_from_phone(numbers[0][1])
 
@@ -1370,8 +1357,6 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     text = f"{flag} *{country_name}*➔`[{range_val}]`👀\n━━━━━━━━━━━━━━━━━━━━━━━\n⏳ *Waiting for OTP....*{invisible_space}"
     
     builder = InlineKeyboardBuilder()
-    
-    # বাগ ফিক্স: Tuple Unpacking করা হয়েছে যাতে ক্র্যাশ না হয়
     for idx, (nid, phone) in enumerate(numbers, 1):
         builder.row(types.InlineKeyboardButton(text=f" {format_number_with_flag(phone)}", copy_text=CopyTextButton(text=phone)))
 
@@ -1389,6 +1374,10 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
             sent = await callback_or_msg.message.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
         else:
             sent = await callback_or_msg.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
+
+    if isinstance(callback_or_msg, types.Message):
+        try: await callback_or_msg.delete() 
+        except: pass
 
     asyncio.create_task(poll_for_otp(sent.chat.id, [p[1] for p in numbers], duration_sec=300, is_manual=False))
     return sent
