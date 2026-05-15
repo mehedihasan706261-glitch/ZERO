@@ -17,7 +17,6 @@ import random
 
 # ================= CONFIGURATION =================
 TOKEN = "8647348457:AAEi5Kre2Df4Xeig80aZzsd_7zR9MFO739Y"
-# TELEGRAM_CHAT_ID = "-1003860008126" # (গ্রুপে ওটিপি পাঠানো বন্ধ করা হয়েছে, তাই এটি আর ব্যবহার হবে না)
 
 # --- Panel 1 (MNIT Network Only) ---
 API_BASE_URL = "https://x.mnitnetwork.com"
@@ -150,7 +149,7 @@ COUNTRY_PREFIXES = {
     "385": ("HR", "🇭🇷"), "386": ("SI", "🇸🇮"), "387": ("BA", "🇧🇦"), "389": ("MK", "🇲🇰"),
     "420": ("CZ", "🇨🇿"), "421": ("SK", "🇸🇰"), "423": ("LI", "🇱🇮"), "500": ("FK", "🇫🇰"),
     "501": ("BZ", "🇧🇿"), "502": ("GT", "🇬🇹"), "503": ("SV", "🇸🇻"), "504": ("HN", "🇭🇳"),
-    "505": ("NI", "🇳🇮"), "506": ("CR", "🇨🇷"), "507": ("PA", "🇵🇦"), "508": ("PM", "🇵🇲"),
+    "505": ("NI", "🇳ূপ"), "506": ("CR", "🇨🇷"), "507": ("PA", "🇵🇦"), "508": ("PM", "🇵🇲"),
     "509": ("HT", "🇭🇹"), "590": ("GP", "🇬🇵"), "591": ("BO", "🇧🇴"), "592": ("GY", "🇬🇾"),
     "593": ("EC", "🇪🇨"), "594": ("GF", "🇬🇫"), "595": ("PY", "🇵🇾"), "596": ("MQ", "🇲🇶"),
     "597": ("SR", "🇸🇷"), "598": ("UY", "🇺🇾"), "599": ("CW", "🇨🇼"), "670": ("TL", "🇹🇱"),
@@ -296,7 +295,6 @@ def parse_number_data(data):
             num = data[0].get('full_number') or data[0].get('number') or data[0].get('phone') or data[0].get('number_raw')
     
     if num:
-        # বাগ ফিক্স: স্ট্রিং পাঠানো হচ্ছে যাতে বাটন ক্র্যাশ না করে
         return str(num).replace(' ', '').replace('+', '')
     return None
 
@@ -307,21 +305,32 @@ async def fetch_one_number(range_val: str, attempt: int = 0):
     
     try:
         session = await get_session()
-        async with session.get(url, params=payload, headers=headers, timeout=15, ssl=False) as resp:
+        async with session.get(url, params=payload, headers=headers, timeout=10, ssl=False) as resp:
             if resp.status == 200:
                 res = parse_number_data(await resp.json())
                 if res: return res
                 
-        async with session.post(url, json=payload, headers=headers, timeout=15, ssl=False) as resp:
+        async with session.post(url, json=payload, headers=headers, timeout=10, ssl=False) as resp:
             if resp.status == 200:
                 res = parse_number_data(await resp.json())
                 if res: return res
     except Exception: pass
         
     if attempt < 2:
-        await asyncio.sleep(1.5) 
+        await asyncio.sleep(1.0) 
         return await fetch_one_number(range_val, attempt=attempt+1)
     return None
+
+# ফাস্ট রেঞ্জ ফেচিং - সুপারফাস্ট Concurrent লজিক (আপনার অরিজিনাল কোডের মতো)
+async def fetch_numbers_by_range(range_val: str, limit: int = 2):
+    tasks = [fetch_one_number(range_val) for _ in range(limit)]
+    results = await asyncio.gather(*tasks)
+    
+    unique_numbers = []
+    for res in results:
+        if res and res not in unique_numbers:
+            unique_numbers.append(res)
+    return unique_numbers
 
 # ================= BACKGROUND TASKS (MASTER OTP FETCHER) =================
 async def master_otp_fetcher():
@@ -1192,8 +1201,10 @@ async def manual_country_selected(callback: types.CallbackQuery):
     cursor.execute("UPDATE users SET active_manual=?, manual_cooldowns=? WHERE id=?", (active_data, json.dumps(user_cds), uid))
     db.commit()
     
+    # ❌ Updated Time রিমুভ করা হয়েছে, 대신 Invisible space ট্রিক দেওয়া হলো হ্যাং ঠেকানোর জন্য
+    invisible_space = "\u200B" * random.randint(1, 15)
     text = (f"🌐 <b>Country:</b> {flag} {c_name}\n💸 <b>Reward:</b> +৳{otp_rate} (Per OTP)\n━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"╔══════════════════════════╗\n║  ⏳ <i>Waiting for OTP...</i>  ║\n╚══════════════════════════╝")
+            f"╔══════════════════════════╗\n║  ⏳ <i>Waiting for OTP...</i>  ║\n╚══════════════════════════╝{invisible_space}")
     
     builder = InlineKeyboardBuilder()
     for num in nums: builder.row(types.InlineKeyboardButton(text=f"📄 {num}", copy_text=CopyTextButton(text=num)))
@@ -1274,8 +1285,10 @@ async def man_change_numbers(callback: types.CallbackQuery):
     cursor.execute("UPDATE users SET active_manual=?, manual_cooldowns=? WHERE id=?", (json.dumps(active), json.dumps(user_cds), uid))
     db.commit()
     
+    # ❌ Updated Time রিমুভ করা হয়েছে, 대신 Invisible space ট্রিক দেওয়া হলো হ্যাং ঠেকানোর জন্য
+    invisible_space = "\u200B" * random.randint(1, 15)
     text = (f"🌐 <b>Country:</b> {flag} {c_name}\n💸 <b>Reward:</b> +৳{otp_rate} (Per OTP)\n━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"╔══════════════════════════╗\n║  ⏳ <i>Waiting for OTP...</i>  ║\n╚══════════════════════════╝")
+            f"╔══════════════════════════╗\n║  ⏳ <i>Waiting for OTP...</i>  ║\n╚══════════════════════════╝{invisible_space}")
     
     builder = InlineKeyboardBuilder()
     for num in new_nums: builder.row(types.InlineKeyboardButton(text=f"📄 {num}", copy_text=CopyTextButton(text=num)))
@@ -1313,6 +1326,7 @@ async def auto_detect_range(message: types.Message, state: FSMContext):
 async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int = 2):
     row = cursor.execute("SELECT name, flag, country_code FROM services WHERE range_val=?", (range_val,)).fetchone()
     
+    # ❌ মেসেজ আগে ডিলিট করা হবে না। আগে মেসেজ পাঠানো হবে, তারপর ইউজারের কমান্ড ডিলিট করা হবে।
     if isinstance(callback_or_msg, types.CallbackQuery):
         target_message = callback_or_msg.message
         try: await target_message.edit_text(f"⏳ *Fetching numbers for `{range_val}`...*", parse_mode="Markdown")
@@ -1322,13 +1336,14 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     else:
         target_message = await callback_or_msg.answer(f"⏳ *Fetching numbers for `{range_val}`...*", parse_mode="Markdown")
 
+    # Concurrent Fetching (আপনার অরিজিনাল ফাস্ট সিস্টেম)
+    tasks = [fetch_one_number(range_val) for _ in range(limit)]
+    results = await asyncio.gather(*tasks)
+    
     numbers = []
-    # এখানে আবার অরিজিনাল সিকুয়েনশিয়াল লজিকটা ব্যবহার করা হয়েছে, যেনো API ব্লক না করে।
-    for _ in range(limit):
-        res = await fetch_one_number(range_val)
+    for res in results:
         if res and res not in numbers:
             numbers.append(res)
-        await asyncio.sleep(0.5)
 
     if not numbers:
         try: await target_message.edit_text(f"❌ Could not fetch numbers for `{range_val}`. Try again.", parse_mode="Markdown")
@@ -1338,10 +1353,20 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     if row: name, flag, country_code = row
     else: country_code, flag = get_country_from_phone(numbers[0])
 
-    country_map = {"BD": "Bangladesh", "US": "United States", "IN": "India"}
+    country_map = {
+        "BD": "Bangladesh", "US": "United States", "IN": "India", "MM": "Myanmar",
+        "PK": "Pakistan", "RU": "Russia", "UA": "Ukraine", "GB": "United Kingdom",
+        "FR": "France", "DE": "Germany", "IT": "Italy", "ES": "Spain",
+        "BR": "Brazil", "AR": "Argentina", "MX": "Mexico", "ID": "Indonesia",
+        "PH": "Philippines", "VN": "Vietnam", "TH": "Thailand", "TR": "Turkey",
+        "EG": "Egypt", "NG": "Nigeria", "ZA": "South Africa", "KE": "Kenya",
+        "SL": "Sierra Leone", "LR": "Liberia", "GH": "Ghana", "CM": "Cameroon"
+    }
     country_name = country_map.get(country_code, country_code)
 
-    text = f"{flag} *{country_name}*➔`[{range_val}]`👀\n━━━━━━━━━━━━━━━━━━━━━━━\n⏳ *Waiting for OTP....*"
+    # ❌ Updated Time রিমুভ করা হয়েছে, 대신 Invisible space ট্রিক দেওয়া হলো হ্যাং ঠেকানোর জন্য
+    invisible_space = "\u200B" * random.randint(1, 15)
+    text = f"{flag} *{country_name}*➔`[{range_val}]`👀\n━━━━━━━━━━━━━━━━━━━━━━━\n⏳ *Waiting for OTP....*{invisible_space}"
     
     builder = InlineKeyboardBuilder()
     for idx, phone in enumerate(numbers, 1):
@@ -1362,7 +1387,7 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
         else:
             sent = await callback_or_msg.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
 
-    # ডিলিট অপশন এখানে অ্যাড করা হলো
+    # ✅ নাম্বার সাকসেসফুলি পাওয়ার পর ইউজারের আগের মেসেজটি (99298XXX) ডিলিট করা হবে।
     if isinstance(callback_or_msg, types.Message):
         try: await callback_or_msg.delete() 
         except: pass
