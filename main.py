@@ -215,7 +215,6 @@ CURRENT_OTP_LOGS = []
 def extract_otp(message):
     if not message: return None
     message_str = str(message).upper()
-    
     ast_match = re.search(r'\*{4,8}', message_str)
     if ast_match:
         return ''.join(random.choices('0123456789', k=len(ast_match.group(0))))
@@ -231,6 +230,12 @@ def extract_otp(message):
     numbers = re.findall(r'\d+', message_str)
     if numbers: return numbers[0][:8]
     return None
+
+def generate_skypro_number(phone: str) -> str:
+    digits = re.sub(r'\D', '', str(phone))
+    if len(digits) >= 6: return f"{digits[:3]}SKYPRO{digits[-3:]}"
+    elif len(digits) > 3: return f"{digits[:3]}SKYPRO"
+    return f"SKYPRO{digits}"
 
 # ================= FSM STATES =================
 class AdminStates(StatesGroup):
@@ -258,7 +263,7 @@ class WithdrawState(StatesGroup):
 class CustomRangeState(StatesGroup):
     waiting_range_value = State()
 
-# ================= API DATA FETCHING =================
+# ================= API DATA FETCHING (MASTER FETCHER) =================
 http_session = None
 async def get_session():
     global http_session
@@ -311,7 +316,7 @@ async def fetch_one_number(range_val: str, attempt: int = 0):
     except Exception: pass
         
     if attempt < 2:
-        await asyncio.sleep(1.5) # অরিজিনাল কোডের মতো রেট লিমিট ফিক্স
+        await asyncio.sleep(1.5) 
         return await fetch_one_number(range_val, attempt=attempt+1)
     return None
 
@@ -319,8 +324,9 @@ async def fetch_numbers_by_range(range_val: str, limit: int = 2):
     results = []
     for _ in range(limit):
         res = await fetch_one_number(range_val)
-        if res: results.append(res)
-        await asyncio.sleep(1.5) # অরিজিনাল কোডের মতো সিকুয়েনশিয়াল ডিলে
+        if res and res not in results:
+            results.append(res)
+        await asyncio.sleep(0.5) 
     return results
 
 # ================= BACKGROUND TASKS (MASTER OTP FETCHER) =================
@@ -346,6 +352,7 @@ async def master_otp_fetcher():
         
         temp_logs = []
         
+        # Panel 1
         if res_a:
             data_obj = res_a.get("data", [])
             logs = data_obj.get("otps", []) if isinstance(data_obj, dict) else data_obj
@@ -357,6 +364,7 @@ async def master_otp_fetcher():
                         "service": log.get("operator", log.get("service", "FB"))
                     })
                     
+        # Panel 2
         if res_b and res_b.get("status") == "success":
             for log in res_b.get("data", []):
                 temp_logs.append({
@@ -365,6 +373,7 @@ async def master_otp_fetcher():
                     "service": log.get("cli", "FB")
                 })
                 
+        # Panel 3
         if res_c:
             logs_c = res_c.get("aaData") or res_c.get("data") or []
             for row in logs_c:
@@ -380,6 +389,7 @@ async def master_otp_fetcher():
                 sms = re.sub(r'<[^>]+>', '', sms)
                 if phone and sms: temp_logs.append({"phone": phone, "sms": sms, "service": cli})
         
+        # Panel 4
         if res_d:
             logs_d = res_d.get("aaData") or res_d.get("data") or []
             for row in logs_d:
@@ -601,7 +611,6 @@ async def admin_main(message: types.Message, state: FSMContext):
     await state.clear()
     if is_admin(message.from_user.id): await message.answer("⚙️ 𝑨𝑫𝑴𝑰𝑵 𝑷𝑨𝑵𝑬𝑳", reply_markup=admin_menu(), parse_mode="Markdown")
 
-
 # ================= WITHDRAW =================
 @dp.callback_query(F.data == "withdraw_req")
 async def withdraw_start(callback: types.CallbackQuery, state: FSMContext):
@@ -649,7 +658,6 @@ async def withdraw_amount(message: types.Message, state: FSMContext):
             except: pass
     except: await message.answer("❌ Please enter a valid number.")
     finally: await state.clear()
-
 
 # ================= ADMIN PANEL LOGIC =================
 @dp.callback_query(F.data == "add_balance_btn")
@@ -1190,8 +1198,10 @@ async def manual_country_selected(callback: types.CallbackQuery):
     cursor.execute("UPDATE users SET active_manual=?, manual_cooldowns=? WHERE id=?", (active_data, json.dumps(user_cds), uid))
     db.commit()
     
+    updated_time = datetime.now().strftime('%I:%M:%S %p')
     text = (f"🌐 <b>Country:</b> {flag} {c_name}\n💸 <b>Reward:</b> +৳{otp_rate} (Per OTP)\n━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"╔══════════════════════════╗\n║  ⏳ <i>Waiting for OTP...</i>  ║\n╚══════════════════════════╝")
+            f"╔══════════════════════════╗\n║  ⏳ <i>Waiting for OTP...</i>  ║\n╚══════════════════════════╝\n"
+            f"🕒 <i>Updated: {updated_time}</i>")
     
     builder = InlineKeyboardBuilder()
     for num in nums: builder.row(types.InlineKeyboardButton(text=f"📄 {num}", copy_text=CopyTextButton(text=num)))
@@ -1272,21 +1282,28 @@ async def man_change_numbers(callback: types.CallbackQuery):
     cursor.execute("UPDATE users SET active_manual=?, manual_cooldowns=? WHERE id=?", (json.dumps(active), json.dumps(user_cds), uid))
     db.commit()
     
+    updated_time = datetime.now().strftime('%I:%M:%S %p')
     text = (f"🌐 <b>Country:</b> {flag} {c_name}\n💸 <b>Reward:</b> +৳{otp_rate} (Per OTP)\n━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"╔══════════════════════════╗\n║  ⏳ <i>Waiting for OTP...</i>  ║\n╚══════════════════════════╝")
+            f"╔══════════════════════════╗\n║  ⏳ <i>Waiting for OTP...</i>  ║\n╚══════════════════════════╝\n"
+            f"🕒 <i>Updated: {updated_time}</i>")
     
     builder = InlineKeyboardBuilder()
     for num in new_nums: builder.row(types.InlineKeyboardButton(text=f"📄 {num}", copy_text=CopyTextButton(text=num)))
     builder.row(types.InlineKeyboardButton(text="♻️ 𝑪𝑯𝑨𝑵𝑮𝑬 𝑵𝑼𝑴𝑩𝑬𝑹", callback_data=f"man_change_{svc_id}"), types.InlineKeyboardButton(text="🌍 𝑪𝑯𝑨𝑵𝑮𝑬 𝑪𝑶𝑼𝑵𝑻𝑹𝒀", callback_data=f"manual_svc_{svc_name}"))
     builder.row(types.InlineKeyboardButton(text="💬 𝑶𝑻𝑷 𝑮𝑹𝑶𝑼𝑷", url=OTP_GROUP_LINK))
     
-    try: await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
-    except: await callback.message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    try: 
+        await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    except Exception: 
+        try: await callback.message.delete()
+        except: pass
+        await callback.message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        
     await callback.answer("নাম্বার সফলভাবে পরিবর্তন হয়েছে!", show_alert=False)
     asyncio.create_task(poll_for_otp(uid, new_nums, duration_sec=1200, is_manual=True))
 
 # ================= AUTO RANGE DETECTION =================
-RANGE_PATTERN = re.compile(r'[\+]?(\d{5,12}[Xx]{2,6})')
+RANGE_PATTERN = re.compile(r'[\+]?(\d{3,12}[Xx]{2,6})')
 
 @dp.message()
 async def auto_detect_range(message: types.Message, state: FSMContext):
@@ -1319,7 +1336,6 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
         target_message = await callback_or_msg.answer(f"⏳ *Fetching numbers for `{range_val}`...*", parse_mode="Markdown")
 
     numbers = []
-    # সিকুয়েনশিয়াল ফেচিং, ১.৫ সেকেন্ড গ্যাপ দিয়ে (ব্লক হওয়া ঠেকানোর জন্য অরিজিনাল নিয়ম)
     for _ in range(limit):
         res = await fetch_one_number(range_val)
         if res and res not in numbers:
@@ -1345,7 +1361,9 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     }
     country_name = country_map.get(country_code, country_code)
 
-    text = f"{flag} *{country_name}*➔`[{range_val}]`👀\n━━━━━━━━━━━━━━━━━━━━━━━\n⏳ *Waiting for OTP....*"
+    updated_time = datetime.now().strftime('%I:%M:%S %p')
+    text = f"{flag} *{country_name}*➔`[{range_val}]`👀\n━━━━━━━━━━━━━━━━━━━━━━━\n⏳ *Waiting for OTP....*\n🕒 _Updated: {updated_time}_"
+    
     builder = InlineKeyboardBuilder()
     for idx, (nid, phone) in enumerate(numbers, 1):
         builder.row(types.InlineKeyboardButton(text=f" {format_number_with_flag(phone)}", copy_text=CopyTextButton(text=phone)))
