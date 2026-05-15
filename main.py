@@ -170,7 +170,7 @@ COUNTRY_PREFIXES = {
 }
 
 def get_country_from_phone(phone: str) -> tuple:
-    digits = ''.join(filter(str.isdigit, phone))
+    digits = ''.join(filter(str.isdigit, str(phone)))
     if not digits: return "GLOBAL", "🌍"
     for length in range(5, 0, -1):
         if digits[:length] in COUNTRY_PREFIXES:
@@ -296,8 +296,8 @@ def parse_number_data(data):
             num = data[0].get('full_number') or data[0].get('number') or data[0].get('phone') or data[0].get('number_raw')
     
     if num:
-        # BUG FIX: Ensure we only return a clean string, NOT A TUPLE
-        return str(num).replace(' ', '').replace('+', '')
+        num_str = str(num).replace(' ', '').replace('+', '')
+        return (num_str, num_str)
     return None
 
 async def fetch_one_number(range_val: str, attempt: int = 0):
@@ -307,31 +307,31 @@ async def fetch_one_number(range_val: str, attempt: int = 0):
     
     try:
         session = await get_session()
-        async with session.get(url, params=payload, headers=headers, timeout=10, ssl=False) as resp:
+        async with session.get(url, params=payload, headers=headers, timeout=15, ssl=False) as resp:
             if resp.status == 200:
                 res = parse_number_data(await resp.json())
                 if res: return res
                 
-        async with session.post(url, json=payload, headers=headers, timeout=10, ssl=False) as resp:
+        async with session.post(url, json=payload, headers=headers, timeout=15, ssl=False) as resp:
             if resp.status == 200:
                 res = parse_number_data(await resp.json())
                 if res: return res
     except Exception: pass
         
     if attempt < 2:
-        await asyncio.sleep(1.0) 
+        await asyncio.sleep(1.0)
         return await fetch_one_number(range_val, attempt=attempt+1)
     return None
 
+# Sequential Fetching for Range Numbers
 async def fetch_numbers_by_range(range_val: str, limit: int = 2):
-    numbers = []
-    # Sequential fetch like original to avoid panel blocking requests
+    results = []
     for _ in range(limit):
         res = await fetch_one_number(range_val)
-        if res and res not in numbers:
-            numbers.append(res)
+        if res and res not in results:
+            results.append(res)
         await asyncio.sleep(0.5) 
-    return numbers
+    return results
 
 # ================= BACKGROUND TASKS (MASTER OTP FETCHER) =================
 async def master_otp_fetcher():
@@ -1198,6 +1198,7 @@ async def manual_country_selected(callback: types.CallbackQuery):
     cursor.execute("UPDATE users SET active_manual=?, manual_cooldowns=? WHERE id=?", (active_data, json.dumps(user_cds), uid))
     db.commit()
     
+    # ❌ Updated Time রিমুভ করা হয়েছে
     text = (f"🌐 <b>Country:</b> {flag} {c_name}\n💸 <b>Reward:</b> +৳{otp_rate} (Per OTP)\n━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"╔══════════════════════════╗\n║  ⏳ <i>Waiting for OTP...</i>  ║\n╚══════════════════════════╝")
     
@@ -1280,10 +1281,9 @@ async def man_change_numbers(callback: types.CallbackQuery):
     cursor.execute("UPDATE users SET active_manual=?, manual_cooldowns=? WHERE id=?", (json.dumps(active), json.dumps(user_cds), uid))
     db.commit()
     
-    updated_time = datetime.now().strftime('%I:%M:%S %p')
+    # ❌ Updated Time রিমুভ করা হয়েছে
     text = (f"🌐 <b>Country:</b> {flag} {c_name}\n💸 <b>Reward:</b> +৳{otp_rate} (Per OTP)\n━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"╔══════════════════════════╗\n║  ⏳ <i>Waiting for OTP...</i>  ║\n╚══════════════════════════╝\n"
-            f"🕒 <i>Updated: {updated_time}</i>")
+            f"╔══════════════════════════╗\n║  ⏳ <i>Waiting for OTP...</i>  ║\n╚══════════════════════════╝")
     
     builder = InlineKeyboardBuilder()
     for num in new_nums: builder.row(types.InlineKeyboardButton(text=f"📄 {num}", copy_text=CopyTextButton(text=num)))
@@ -1334,7 +1334,6 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
         target_message = await callback_or_msg.answer(f"⏳ *Fetching numbers for `{range_val}`...*", parse_mode="Markdown")
 
     numbers = []
-    # এখানে আবার অরিজিনাল সিকুয়েনশিয়াল লজিকটা ব্যবহার করা হয়েছে, যেনো API ব্লক না করে।
     for _ in range(limit):
         res = await fetch_one_number(range_val)
         if res and res not in numbers:
@@ -1352,8 +1351,8 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     country_map = {"BD": "Bangladesh", "US": "United States", "IN": "India"}
     country_name = country_map.get(country_code, country_code)
 
-    updated_time = datetime.now().strftime('%I:%M:%S %p')
-    text = f"{flag} *{country_name}*➔`[{range_val}]`👀\n━━━━━━━━━━━━━━━━━━━━━━━\n⏳ *Waiting for OTP....*\n🕒 _Updated: {updated_time}_"
+    # ❌ Updated Time রিমুভ করা হয়েছে
+    text = f"{flag} *{country_name}*➔`[{range_val}]`👀\n━━━━━━━━━━━━━━━━━━━━━━━\n⏳ *Waiting for OTP....*"
     
     builder = InlineKeyboardBuilder()
     for idx, phone in enumerate(numbers, 1):
@@ -1374,7 +1373,7 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
         else:
             sent = await callback_or_msg.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
 
-    asyncio.create_task(poll_for_otp(sent.chat.id, numbers, duration_sec=300, is_manual=False))
+    asyncio.create_task(poll_for_otp(sent.chat.id, [p[1] for p in numbers], duration_sec=300, is_manual=False))
     return sent
 
 @dp.callback_query(F.data.startswith("chg_range_"))
