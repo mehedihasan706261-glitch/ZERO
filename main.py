@@ -76,6 +76,14 @@ cursor.execute("""CREATE TABLE IF NOT EXISTS withdraw_requests (
     status TEXT DEFAULT 'pending',
     requested_at TEXT
 )""")
+cursor.execute("""CREATE TABLE IF NOT EXISTS used_numbers (
+    user_id INTEGER,
+    number_id TEXT,
+    phone_number TEXT,
+    service_id INTEGER,
+    used_at TEXT,
+    PRIMARY KEY (user_id, number_id)
+)""")
 cursor.execute("CREATE TABLE IF NOT EXISTS admins (user_id TEXT PRIMARY KEY)")
 cursor.execute("""CREATE TABLE IF NOT EXISTS otp_success_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -170,11 +178,16 @@ COUNTRY_PREFIXES = {
 
 def get_country_from_phone(phone: str) -> tuple:
     digits = ''.join(filter(str.isdigit, phone))
-    if not digits: return "GLOBAL", "🌍"
+    if not digits: return "BD", "🇧🇩"
     for length in range(5, 0, -1):
-        if digits[:length] in COUNTRY_PREFIXES:
-            return COUNTRY_PREFIXES[digits[:length]]
-    return "GLOBAL", "🌍"
+        prefix = digits[:length]
+        if prefix in COUNTRY_PREFIXES:
+            return COUNTRY_PREFIXES[prefix]
+    for length in range(3, 0, -1):
+        prefix = digits[:length]
+        if prefix in COUNTRY_PREFIXES:
+            return COUNTRY_PREFIXES[prefix]
+    return "BD", "🇧🇩"
 
 def format_number_with_flag(phone: str) -> str:
     _, flag = get_country_from_phone(phone)
@@ -254,12 +267,6 @@ class AdminStates(StatesGroup):
     waiting_remove_admin = State()
     waiting_add_balance_id = State()
     waiting_add_balance_amount = State()
-    waiting_manual_file = State()
-    waiting_manual_svc_name = State()
-    waiting_manual_country = State()
-    waiting_manual_give_amount = State()
-    waiting_manual_otp_rate = State()
-    waiting_manual_cooldown = State()
 
 class WithdrawState(StatesGroup):
     waiting_number = State()
@@ -1326,13 +1333,7 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     else:
         target_message = await callback_or_msg.answer(f"⏳ *Fetching numbers for `{range_val}`...*", parse_mode="Markdown")
 
-    tasks = [fetch_one_number(range_val) for _ in range(limit)]
-    results = await asyncio.gather(*tasks)
-    
-    numbers = []
-    for res in results:
-        if res and res not in numbers:
-            numbers.append(res)
+    numbers = await fetch_numbers_by_range(range_val, limit=limit)
 
     if not numbers:
         try: await target_message.edit_text(f"❌ Could not fetch numbers for `{range_val}`. Try again.", parse_mode="Markdown")
@@ -1379,7 +1380,8 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
         try: await callback_or_msg.delete() 
         except: pass
 
-    asyncio.create_task(poll_for_otp(sent.chat.id, [p[1] for p in numbers], duration_sec=300, is_manual=False))
+    phones_list = [p[1] for p in numbers]
+    asyncio.create_task(poll_for_otp(sent.chat.id, phones_list, duration_sec=300, is_manual=False))
     return sent
 
 @dp.callback_query(F.data.startswith("chg_range_"))
