@@ -149,7 +149,7 @@ COUNTRY_PREFIXES = {
     "385": ("HR", "🇭🇷"), "386": ("SI", "🇸🇮"), "387": ("BA", "🇧🇦"), "389": ("MK", "🇲🇰"),
     "420": ("CZ", "🇨🇿"), "421": ("SK", "🇸🇰"), "423": ("LI", "🇱🇮"), "500": ("FK", "🇫🇰"),
     "501": ("BZ", "🇧🇿"), "502": ("GT", "🇬🇹"), "503": ("SV", "🇸🇻"), "504": ("HN", "🇭🇳"),
-    "505": ("NI", "🇳ূপ"), "506": ("CR", "🇨🇷"), "507": ("PA", "🇵🇦"), "508": ("PM", "🇵🇲"),
+    "505": ("NI", "🇳🇮"), "506": ("CR", "🇨🇷"), "507": ("PA", "🇵🇦"), "508": ("PM", "🇵🇲"),
     "509": ("HT", "🇭🇹"), "590": ("GP", "🇬🇵"), "591": ("BO", "🇧🇴"), "592": ("GY", "🇬🇾"),
     "593": ("EC", "🇪🇨"), "594": ("GF", "🇬🇫"), "595": ("PY", "🇵🇾"), "596": ("MQ", "🇲🇶"),
     "597": ("SR", "🇸🇷"), "598": ("UY", "🇺🇾"), "599": ("CW", "🇨🇼"), "670": ("TL", "🇹🇱"),
@@ -170,11 +170,16 @@ COUNTRY_PREFIXES = {
 
 def get_country_from_phone(phone: str) -> tuple:
     digits = ''.join(filter(str.isdigit, phone))
-    if not digits: return "GLOBAL", "🌍"
+    if not digits: return "BD", "🇧🇩"
     for length in range(5, 0, -1):
-        if digits[:length] in COUNTRY_PREFIXES:
-            return COUNTRY_PREFIXES[digits[:length]]
-    return "GLOBAL", "🌍"
+        prefix = digits[:length]
+        if prefix in COUNTRY_PREFIXES:
+            return COUNTRY_PREFIXES[prefix]
+    for length in range(3, 0, -1):
+        prefix = digits[:length]
+        if prefix in COUNTRY_PREFIXES:
+            return COUNTRY_PREFIXES[prefix]
+    return "BD", "🇧🇩"
 
 def format_number_with_flag(phone: str) -> str:
     _, flag = get_country_from_phone(phone)
@@ -215,6 +220,7 @@ def extract_otp(message):
     if not message: return None
     message_str = str(message).strip().upper()
     
+    # জিরো বা ভুল ডাটা রিজেক্ট
     if message_str in ["0", "00", "000", "0000", "000000", "NULL", "NONE", "WAITING", "PENDING", ""]:
         return None
     
@@ -265,7 +271,7 @@ class WithdrawState(StatesGroup):
     waiting_number = State()
     waiting_amount = State()
 
-# ================= API DATA FETCHING =================
+# ================= API DATA FETCHING (MASTER FETCHER) =================
 http_session = None
 async def get_session():
     global http_session
@@ -281,6 +287,7 @@ async def fetch_api_data(session, url, headers=None, params=None):
     except Exception: pass
     return None
 
+# !!! আপনার দেওয়া অরিজিনাল নাম্বার ফেচিং লজিক (যা পারফেক্ট কাজ করে) !!!
 def parse_number_data(data):
     if not data: return None
     num = None
@@ -295,7 +302,8 @@ def parse_number_data(data):
             num = data[0].get('full_number') or data[0].get('number') or data[0].get('phone') or data[0].get('number_raw')
     
     if num:
-        return str(num).replace(' ', '').replace('+', '')
+        num_str = str(num).replace(' ', '').replace('+', '')
+        return (num_str, num_str) # Tuple রিটার্ন করছে, যেমন আপনি চেয়েছিলেন
     return None
 
 async def fetch_one_number(range_val: str, attempt: int = 0):
@@ -305,32 +313,28 @@ async def fetch_one_number(range_val: str, attempt: int = 0):
     
     try:
         session = await get_session()
-        async with session.get(url, params=payload, headers=headers, timeout=10, ssl=False) as resp:
+        async with session.get(url, params=payload, headers=headers, timeout=15, ssl=False) as resp:
             if resp.status == 200:
                 res = parse_number_data(await resp.json())
                 if res: return res
                 
-        async with session.post(url, json=payload, headers=headers, timeout=10, ssl=False) as resp:
+        async with session.post(url, json=payload, headers=headers, timeout=15, ssl=False) as resp:
             if resp.status == 200:
                 res = parse_number_data(await resp.json())
                 if res: return res
     except Exception: pass
         
     if attempt < 2:
-        await asyncio.sleep(1.0) 
+        await asyncio.sleep(2) 
         return await fetch_one_number(range_val, attempt=attempt+1)
     return None
 
-# ফাস্ট রেঞ্জ ফেচিং - সুপারফাস্ট Concurrent লজিক (আপনার অরিজিনাল কোডের মতো)
 async def fetch_numbers_by_range(range_val: str, limit: int = 2):
+    # Concurrent Fetching
     tasks = [fetch_one_number(range_val) for _ in range(limit)]
     results = await asyncio.gather(*tasks)
-    
-    unique_numbers = []
-    for res in results:
-        if res and res not in unique_numbers:
-            unique_numbers.append(res)
-    return unique_numbers
+    return [res for res in results if res is not None]
+
 
 # ================= BACKGROUND TASKS (MASTER OTP FETCHER) =================
 async def master_otp_fetcher():
@@ -355,7 +359,6 @@ async def master_otp_fetcher():
         
         temp_logs = []
         
-        # Panel 1
         if res_a:
             data_obj = res_a.get("data", [])
             logs = data_obj.get("otps", []) if isinstance(data_obj, dict) else data_obj
@@ -367,7 +370,6 @@ async def master_otp_fetcher():
                         "service": log.get("operator", log.get("service", "FB"))
                     })
                     
-        # Panel 2
         if res_b and res_b.get("status") == "success":
             for log in res_b.get("data", []):
                 temp_logs.append({
@@ -376,7 +378,6 @@ async def master_otp_fetcher():
                     "service": log.get("cli", "FB")
                 })
                 
-        # Panel 3
         if res_c:
             logs_c = res_c.get("aaData") or res_c.get("data") or []
             for row in logs_c:
@@ -392,7 +393,6 @@ async def master_otp_fetcher():
                 sms = re.sub(r'<[^>]+>', '', sms)
                 if phone and sms: temp_logs.append({"phone": phone, "sms": sms, "service": cli})
         
-        # Panel 4
         if res_d:
             logs_d = res_d.get("aaData") or res_d.get("data") or []
             for row in logs_d:
@@ -429,7 +429,7 @@ async def poll_for_otp(chat_id: int, phones: list, duration_sec: int = 300, is_m
                     if p_clean and (p_clean in phone or phone in p_clean):
                         
                         if is_manual:
-                            act = cursor.execute("SELECT active_manual FROM users WHERE id=?", (chat_id,)).fetchone()
+                            act = cursor.execute("SELECT active_manual FROM WHERE id=?", (chat_id,)).fetchone()
                             if act and act[0]:
                                 active = json.loads(act[0])
                                 if p not in active.get("nums", []):
@@ -1201,7 +1201,6 @@ async def manual_country_selected(callback: types.CallbackQuery):
     cursor.execute("UPDATE users SET active_manual=?, manual_cooldowns=? WHERE id=?", (active_data, json.dumps(user_cds), uid))
     db.commit()
     
-    # ❌ Updated Time রিমুভ করা হয়েছে, 대신 Invisible space ট্রিক দেওয়া হলো হ্যাং ঠেকানোর জন্য
     invisible_space = "\u200B" * random.randint(1, 15)
     text = (f"🌐 <b>Country:</b> {flag} {c_name}\n💸 <b>Reward:</b> +৳{otp_rate} (Per OTP)\n━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"╔══════════════════════════╗\n║  ⏳ <i>Waiting for OTP...</i>  ║\n╚══════════════════════════╝{invisible_space}")
@@ -1285,7 +1284,6 @@ async def man_change_numbers(callback: types.CallbackQuery):
     cursor.execute("UPDATE users SET active_manual=?, manual_cooldowns=? WHERE id=?", (json.dumps(active), json.dumps(user_cds), uid))
     db.commit()
     
-    # ❌ Updated Time রিমুভ করা হয়েছে, 대신 Invisible space ট্রিক দেওয়া হলো হ্যাং ঠেকানোর জন্য
     invisible_space = "\u200B" * random.randint(1, 15)
     text = (f"🌐 <b>Country:</b> {flag} {c_name}\n💸 <b>Reward:</b> +৳{otp_rate} (Per OTP)\n━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"╔══════════════════════════╗\n║  ⏳ <i>Waiting for OTP...</i>  ║\n╚══════════════════════════╝{invisible_space}")
@@ -1318,6 +1316,9 @@ async def auto_detect_range(message: types.Message, state: FSMContext):
 
     match = RANGE_PATTERN.search(text_to_check)
     if match:
+        try: await message.delete() 
+        except: pass
+        
         range_val = match.group(1).upper().replace('X', 'X')
         if range_val.startswith('+'): range_val = range_val[1:]
         
@@ -1326,7 +1327,6 @@ async def auto_detect_range(message: types.Message, state: FSMContext):
 async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int = 2):
     row = cursor.execute("SELECT name, flag, country_code FROM services WHERE range_val=?", (range_val,)).fetchone()
     
-    # ❌ মেসেজ আগে ডিলিট করা হবে না। আগে মেসেজ পাঠানো হবে, তারপর ইউজারের কমান্ড ডিলিট করা হবে।
     if isinstance(callback_or_msg, types.CallbackQuery):
         target_message = callback_or_msg.message
         try: await target_message.edit_text(f"⏳ *Fetching numbers for `{range_val}`...*", parse_mode="Markdown")
@@ -1336,13 +1336,14 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     else:
         target_message = await callback_or_msg.answer(f"⏳ *Fetching numbers for `{range_val}`...*", parse_mode="Markdown")
 
-    # Concurrent Fetching (আপনার অরিজিনাল ফাস্ট সিস্টেম)
+    # আপনার অরিজিনাল ফাস্ট Concurrent Fetching 
     tasks = [fetch_one_number(range_val) for _ in range(limit)]
     results = await asyncio.gather(*tasks)
     
     numbers = []
     for res in results:
         if res and res not in numbers:
+            # Tuple হিসেবে রিসিভ করে শুধু ডাটাবেজ চেক করার জন্য ইনডেক্সিং
             numbers.append(res)
 
     if not numbers:
@@ -1350,8 +1351,9 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
         except: pass
         return None
 
+    # Tuple হিসেবে রিটার্ন হওয়ার কারণে index [0][1] নিতে হবে
     if row: name, flag, country_code = row
-    else: country_code, flag = get_country_from_phone(numbers[0])
+    else: country_code, flag = get_country_from_phone(numbers[0][1])
 
     country_map = {
         "BD": "Bangladesh", "US": "United States", "IN": "India", "MM": "Myanmar",
@@ -1364,12 +1366,13 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     }
     country_name = country_map.get(country_code, country_code)
 
-    # ❌ Updated Time রিমুভ করা হয়েছে, 대신 Invisible space ট্রিক দেওয়া হলো হ্যাং ঠেকানোর জন্য
     invisible_space = "\u200B" * random.randint(1, 15)
     text = f"{flag} *{country_name}*➔`[{range_val}]`👀\n━━━━━━━━━━━━━━━━━━━━━━━\n⏳ *Waiting for OTP....*{invisible_space}"
     
     builder = InlineKeyboardBuilder()
-    for idx, phone in enumerate(numbers, 1):
+    
+    # বাগ ফিক্স: Tuple Unpacking করা হয়েছে যাতে ক্র্যাশ না হয়
+    for idx, (nid, phone) in enumerate(numbers, 1):
         builder.row(types.InlineKeyboardButton(text=f" {format_number_with_flag(phone)}", copy_text=CopyTextButton(text=phone)))
 
     builder.row(
@@ -1387,12 +1390,7 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
         else:
             sent = await callback_or_msg.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
 
-    # ✅ নাম্বার সাকসেসফুলি পাওয়ার পর ইউজারের আগের মেসেজটি (99298XXX) ডিলিট করা হবে।
-    if isinstance(callback_or_msg, types.Message):
-        try: await callback_or_msg.delete() 
-        except: pass
-
-    asyncio.create_task(poll_for_otp(sent.chat.id, [p for p in numbers], duration_sec=300, is_manual=False))
+    asyncio.create_task(poll_for_otp(sent.chat.id, [p[1] for p in numbers], duration_sec=300, is_manual=False))
     return sent
 
 @dp.callback_query(F.data.startswith("chg_range_"))
