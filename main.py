@@ -232,12 +232,6 @@ def extract_otp(message):
     if numbers: return numbers[0][:8]
     return None
 
-def generate_skypro_number(phone: str) -> str:
-    digits = re.sub(r'\D', '', str(phone))
-    if len(digits) >= 6: return f"{digits[:3]}SKYPRO{digits[-3:]}"
-    elif len(digits) > 3: return f"{digits[:3]}SKYPRO"
-    return f"SKYPRO{digits}"
-
 # ================= FSM STATES =================
 class AdminStates(StatesGroup):
     waiting_service_name = State()
@@ -317,9 +311,22 @@ async def fetch_one_number(range_val: str, attempt: int = 0):
     except Exception: pass
         
     if attempt < 2:
-        await asyncio.sleep(1.0)
+        # রেঞ্জ এপিআই রেট লিমিট ব্লক ঠেকাতে ১.৫ সেকেন্ড গ্যাপ
+        await asyncio.sleep(1.5)
         return await fetch_one_number(range_val, attempt=attempt+1)
     return None
+
+async def fetch_numbers_by_range(range_val: str, limit: int = 2):
+    numbers = []
+    attempts = 0
+    # Sequential Fetching to avoid API Block
+    while len(numbers) < limit and attempts < limit + 3:
+        res = await fetch_one_number(range_val)
+        if res and res not in numbers:
+            numbers.append(res)
+        attempts += 1
+        await asyncio.sleep(1.0)
+    return numbers
 
 # ================= BACKGROUND TASKS (MASTER OTP FETCHER) =================
 async def master_otp_fetcher():
@@ -344,7 +351,6 @@ async def master_otp_fetcher():
         
         temp_logs = []
         
-        # Panel 1
         if res_a:
             data_obj = res_a.get("data", [])
             logs = data_obj.get("otps", []) if isinstance(data_obj, dict) else data_obj
@@ -356,7 +362,6 @@ async def master_otp_fetcher():
                         "service": log.get("operator", log.get("service", "FB"))
                     })
                     
-        # Panel 2
         if res_b and res_b.get("status") == "success":
             for log in res_b.get("data", []):
                 temp_logs.append({
@@ -365,17 +370,12 @@ async def master_otp_fetcher():
                     "service": log.get("cli", "FB")
                 })
                 
-        # Panel 3
         if res_c:
             logs_c = res_c.get("aaData") or res_c.get("data") or []
             for row in logs_c:
-                phone = ""
-                sms = ""
-                cli = "UNKNOWN"
+                phone, sms, cli = "", "", "UNKNOWN"
                 if isinstance(row, list) and len(row) >= 5:
-                    phone = str(row[2]).strip()
-                    cli = str(row[3]).strip()
-                    sms = str(row[4]).strip()
+                    phone, cli, sms = str(row[2]).strip(), str(row[3]).strip(), str(row[4]).strip()
                 elif isinstance(row, dict):
                     phone = str(row.get("destination", row.get("number", "")))
                     sms = str(row.get("message", row.get("sms", "")))
@@ -383,21 +383,14 @@ async def master_otp_fetcher():
                 
                 phone = re.sub(r'<[^>]+>', '', phone).replace("+", "")
                 sms = re.sub(r'<[^>]+>', '', sms)
-                cli = re.sub(r'<[^>]+>', '', cli)
-                if phone and sms:
-                    temp_logs.append({"phone": phone, "sms": sms, "service": cli})
+                if phone and sms: temp_logs.append({"phone": phone, "sms": sms, "service": cli})
         
-        # Panel 4
         if res_d:
             logs_d = res_d.get("aaData") or res_d.get("data") or []
             for row in logs_d:
-                phone = ""
-                sms = ""
-                cli = "UNKNOWN"
+                phone, sms, cli = "", "", "UNKNOWN"
                 if isinstance(row, list) and len(row) >= 5:
-                    phone = str(row[2]).strip()
-                    cli = str(row[3]).strip()
-                    sms = str(row[4]).strip()
+                    phone, cli, sms = str(row[2]).strip(), str(row[3]).strip(), str(row[4]).strip()
                 elif isinstance(row, dict):
                     phone = str(row.get("destination", row.get("number", "")))
                     sms = str(row.get("message", row.get("sms", "")))
@@ -405,14 +398,12 @@ async def master_otp_fetcher():
                 
                 phone = re.sub(r'<[^>]+>', '', phone).replace("+", "")
                 sms = re.sub(r'<[^>]+>', '', sms)
-                cli = re.sub(r'<[^>]+>', '', cli)
-                if phone and sms:
-                    temp_logs.append({"phone": phone, "sms": sms, "service": cli})
+                if phone and sms: temp_logs.append({"phone": phone, "sms": sms, "service": cli})
                     
         CURRENT_OTP_LOGS = temp_logs
         await asyncio.sleep(1.0)
 
-# ================= INBOX POLLING ONLY (GROUP SENDING REMOVED) =================
+# ================= INBOX POLLING ONLY =================
 async def poll_for_otp(chat_id: int, phones: list, duration_sec: int = 300, is_manual: bool = False):
     end_time = datetime.now().timestamp() + duration_sec
     active_phones = list(phones)
@@ -503,7 +494,6 @@ async def poll_for_otp(chat_id: int, phones: list, duration_sec: int = 300, is_m
                             builder.row(types.InlineKeyboardButton(text=f" {otp}", copy_text=CopyTextButton(text=otp)))
                             await bot.send_message(chat_id, text, reply_markup=builder.as_markup(), parse_mode="Markdown")
                         break
-        # ফাস্ট ইনবক্স স্পিড (0.3 সেকেন্ড)
         await asyncio.sleep(0.3)
 
 async def process_manual_expiry():
@@ -536,7 +526,6 @@ def main_menu(user_id: int):
     return builder.as_markup(resize_keyboard=True)
 
 def manual_services_keyboard():
-    # ক্লিন ক্যাটাগরি: কোনো আইকন নেই, কোনো স্টক নেই, কোনো পতাকা নেই।
     items = cursor.execute("SELECT DISTINCT service_name FROM manual_services WHERE stock > 0").fetchall()
     builder = InlineKeyboardBuilder()
     for (svc,) in items:
@@ -576,7 +565,7 @@ def admin_management_menu():
     builder.row(types.InlineKeyboardButton(text="🔙 Back", callback_data="admin_back"))
     return builder.as_markup()
 
-# ================= MAIN MENU HANDLERS (FSM FREEZE FIX) =================
+# ================= MAIN MENU HANDLERS =================
 @dp.message(Command("start"))
 async def start(message: types.Message, state: FSMContext):
     await state.clear()
@@ -591,7 +580,6 @@ async def start(message: types.Message, state: FSMContext):
 async def get_number_selection(message: types.Message, state: FSMContext):
     await state.clear()
     if await check_maintenance(message.from_user.id, message=message): return
-    # রেঞ্জ অপশন বাদ, সরাসরি ক্যাটাগরি মেনু
     await message.answer("📂 Select a service:", reply_markup=manual_services_keyboard())
 
 @dp.message(F.text == "💰 𝑩𝑨𝑳𝑨𝑵𝑪𝑬")
@@ -617,7 +605,6 @@ async def admin_panel_button(message: types.Message, state: FSMContext):
 async def admin_main(message: types.Message, state: FSMContext):
     await state.clear()
     if is_admin(message.from_user.id): await message.answer("⚙️ 𝑨𝑫𝑴𝑰𝑵 𝑷𝑨𝑵𝑬𝑳", reply_markup=admin_menu(), parse_mode="Markdown")
-
 
 # ================= WITHDRAW =================
 @dp.callback_query(F.data == "withdraw_req")
@@ -666,7 +653,6 @@ async def withdraw_amount(message: types.Message, state: FSMContext):
             except: pass
     except: await message.answer("❌ Please enter a valid number.")
     finally: await state.clear()
-
 
 # ================= ADMIN PANEL LOGIC =================
 @dp.callback_query(F.data == "add_balance_btn")
@@ -1315,7 +1301,7 @@ async def auto_detect_range(message: types.Message, state: FSMContext):
 
     match = RANGE_PATTERN.search(text_to_check)
     if match:
-        try: await message.delete() # ইউজার মেসেজ ডিলিট
+        try: await message.delete() 
         except: pass
         
         range_val = match.group(1).upper().replace('X', 'X')
@@ -1340,7 +1326,7 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
         res = await fetch_one_number(range_val)
         if res and res not in numbers:
             numbers.append(res)
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(1.0) # Rate limit fix
 
     if not numbers:
         try: await target_message.edit_text(f"❌ Could not fetch numbers for `{range_val}`. Try again.", parse_mode="Markdown")
