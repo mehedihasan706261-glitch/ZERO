@@ -258,7 +258,7 @@ class WithdrawState(StatesGroup):
 class CustomRangeState(StatesGroup):
     waiting_range_value = State()
 
-# ================= API DATA FETCHING (MASTER FETCHER) =================
+# ================= API DATA FETCHING =================
 http_session = None
 async def get_session():
     global http_session
@@ -311,22 +311,17 @@ async def fetch_one_number(range_val: str, attempt: int = 0):
     except Exception: pass
         
     if attempt < 2:
-        # রেঞ্জ এপিআই রেট লিমিট ব্লক ঠেকাতে ১.৫ সেকেন্ড গ্যাপ
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(1.5) # অরিজিনাল কোডের মতো রেট লিমিট ফিক্স
         return await fetch_one_number(range_val, attempt=attempt+1)
     return None
 
 async def fetch_numbers_by_range(range_val: str, limit: int = 2):
-    numbers = []
-    attempts = 0
-    # Sequential Fetching to avoid API Block
-    while len(numbers) < limit and attempts < limit + 3:
+    results = []
+    for _ in range(limit):
         res = await fetch_one_number(range_val)
-        if res and res not in numbers:
-            numbers.append(res)
-        attempts += 1
-        await asyncio.sleep(1.0)
-    return numbers
+        if res: results.append(res)
+        await asyncio.sleep(1.5) # অরিজিনাল কোডের মতো সিকুয়েনশিয়াল ডিলে
+    return results
 
 # ================= BACKGROUND TASKS (MASTER OTP FETCHER) =================
 async def master_otp_fetcher():
@@ -606,6 +601,7 @@ async def admin_main(message: types.Message, state: FSMContext):
     await state.clear()
     if is_admin(message.from_user.id): await message.answer("⚙️ 𝑨𝑫𝑴𝑰𝑵 𝑷𝑨𝑵𝑬𝑳", reply_markup=admin_menu(), parse_mode="Markdown")
 
+
 # ================= WITHDRAW =================
 @dp.callback_query(F.data == "withdraw_req")
 async def withdraw_start(callback: types.CallbackQuery, state: FSMContext):
@@ -653,6 +649,7 @@ async def withdraw_amount(message: types.Message, state: FSMContext):
             except: pass
     except: await message.answer("❌ Please enter a valid number.")
     finally: await state.clear()
+
 
 # ================= ADMIN PANEL LOGIC =================
 @dp.callback_query(F.data == "add_balance_btn")
@@ -1289,7 +1286,7 @@ async def man_change_numbers(callback: types.CallbackQuery):
     asyncio.create_task(poll_for_otp(uid, new_nums, duration_sec=1200, is_manual=True))
 
 # ================= AUTO RANGE DETECTION =================
-RANGE_PATTERN = re.compile(r'[\+]?(\d{3,12}[Xx]{2,6})')
+RANGE_PATTERN = re.compile(r'[\+]?(\d{5,12}[Xx]{2,6})')
 
 @dp.message()
 async def auto_detect_range(message: types.Message, state: FSMContext):
@@ -1322,11 +1319,12 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
         target_message = await callback_or_msg.answer(f"⏳ *Fetching numbers for `{range_val}`...*", parse_mode="Markdown")
 
     numbers = []
+    # সিকুয়েনশিয়াল ফেচিং, ১.৫ সেকেন্ড গ্যাপ দিয়ে (ব্লক হওয়া ঠেকানোর জন্য অরিজিনাল নিয়ম)
     for _ in range(limit):
         res = await fetch_one_number(range_val)
         if res and res not in numbers:
             numbers.append(res)
-        await asyncio.sleep(1.0) # Rate limit fix
+        await asyncio.sleep(1.5)
 
     if not numbers:
         try: await target_message.edit_text(f"❌ Could not fetch numbers for `{range_val}`. Try again.", parse_mode="Markdown")
@@ -1336,7 +1334,15 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     if row: name, flag, country_code = row
     else: country_code, flag = get_country_from_phone(numbers[0][1])
 
-    country_map = {"BD": "Bangladesh", "US": "United States", "IN": "India"}
+    country_map = {
+        "BD": "Bangladesh", "US": "United States", "IN": "India", "MM": "Myanmar",
+        "PK": "Pakistan", "RU": "Russia", "UA": "Ukraine", "GB": "United Kingdom",
+        "FR": "France", "DE": "Germany", "IT": "Italy", "ES": "Spain",
+        "BR": "Brazil", "AR": "Argentina", "MX": "Mexico", "ID": "Indonesia",
+        "PH": "Philippines", "VN": "Vietnam", "TH": "Thailand", "TR": "Turkey",
+        "EG": "Egypt", "NG": "Nigeria", "ZA": "South Africa", "KE": "Kenya",
+        "SL": "Sierra Leone", "LR": "Liberia", "GH": "Ghana", "CM": "Cameroon"
+    }
     country_name = country_map.get(country_code, country_code)
 
     text = f"{flag} *{country_name}*➔`[{range_val}]`👀\n━━━━━━━━━━━━━━━━━━━━━━━\n⏳ *Waiting for OTP....*"
