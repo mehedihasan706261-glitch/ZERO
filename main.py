@@ -39,6 +39,20 @@ SHAHRUKH_HEADERS = {
     "Cookie": SHAHRUKH_COOKIE
 }
 
+# --- Panel 4 (MSI Panel) ---
+MSI_API_KEY = "ZIaAfHKXgIV5T088QlFUREg="
+MSI_COOKIE = "PHPSESSID=m0gfslir4h1aig0qcm1e6gtlu1"
+MSI_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Linux; Android 14; SM-E236B Build/UP1A.231005.007) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.7727.137 Safari/537.36",
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "X-Requested-With": "XMLHttpRequest",
+    "Referer": "http://145.239.130.45/ints/agent/SMSCDRStats",
+    "Accept-Encoding": "gzip, deflate",
+    "Accept-Language": "en-GB,en-US;q=0.9,en;q=0.8",
+    "Connection": "keep-alive",
+    "Cookie": MSI_COOKIE
+}
+
 OTP_GROUP_LINK = "https://t.me/+4nMAFt2hYk04YTRl"
 
 bot = Bot(token=TOKEN)
@@ -195,7 +209,6 @@ async def check_maintenance(user_id: int, message: types.Message = None, callbac
     return False
 
 # ================= SMART OTP EXTRACTOR =================
-group_processed_otps = deque(maxlen=5000)
 user_processed_otps = deque(maxlen=5000)
 CURRENT_OTP_LOGS = []
 
@@ -308,7 +321,7 @@ async def fetch_one_number(range_val: str, attempt: int = 0):
         return await fetch_one_number(range_val, attempt=attempt+1)
     return None
 
-# ফিক্স: রেঞ্জের নাম্বারগুলো একটার পর একটা (Sequential) আনা হবে, যাতে প্যানেল ব্লক না করে
+# Sequential Fetching for Range Numbers
 async def fetch_numbers_by_range(range_val: str, limit: int = 2):
     results = []
     for _ in range(limit):
@@ -329,12 +342,16 @@ async def master_otp_fetcher():
     
     while True:
         today = datetime.now().strftime('%Y-%m-%d')
+        # Panel 3 (Shahrukh)
         url_C = f"http://65.109.111.158/ints/agent/res/data_smscdr.php?fdate1={today}%2000:00:00&fdate2={today}%2023:59:59&sEcho=1&iColumns=9&iDisplayStart=0&iDisplayLength=30"
+        # Panel 4 (MSI)
+        url_D = f"http://145.239.130.45/ints/agent/res/data_smscdr.php?fdate1={today}%2000:00:00&fdate2={today}%2023:59:59&sEcho=1&iColumns=9&iDisplayStart=0&iDisplayLength=30&sesskey={MSI_API_KEY}"
         
-        res_a, res_b, res_c = await asyncio.gather(
+        res_a, res_b, res_c, res_d = await asyncio.gather(
             fetch_api_data(session, url_A, headers=headers_A),
             fetch_api_data(session, url_B, params=params_B),
-            fetch_api_data(session, url_C, headers=SHAHRUKH_HEADERS)
+            fetch_api_data(session, url_C, headers=SHAHRUKH_HEADERS),
+            fetch_api_data(session, url_D, headers=MSI_HEADERS)
         )
         
         temp_logs = []
@@ -379,13 +396,30 @@ async def master_otp_fetcher():
                 phone = re.sub(r'<[^>]+>', '', phone).replace("+", "")
                 sms = re.sub(r'<[^>]+>', '', sms)
                 cli = re.sub(r'<[^>]+>', '', cli)
-                
                 if phone and sms:
-                    temp_logs.append({
-                        "phone": phone,
-                        "sms": sms,
-                        "service": cli
-                    })
+                    temp_logs.append({"phone": phone, "sms": sms, "service": cli})
+        
+        # Panel 4
+        if res_d:
+            logs_d = res_d.get("aaData") or res_d.get("data") or []
+            for row in logs_d:
+                phone = ""
+                sms = ""
+                cli = "UNKNOWN"
+                if isinstance(row, list) and len(row) >= 5:
+                    phone = str(row[2]).strip()
+                    cli = str(row[3]).strip()
+                    sms = str(row[4]).strip()
+                elif isinstance(row, dict):
+                    phone = str(row.get("destination", row.get("number", "")))
+                    sms = str(row.get("message", row.get("sms", "")))
+                    cli = str(row.get("sender", row.get("cli", "UNKNOWN")))
+                
+                phone = re.sub(r'<[^>]+>', '', phone).replace("+", "")
+                sms = re.sub(r'<[^>]+>', '', sms)
+                cli = re.sub(r'<[^>]+>', '', cli)
+                if phone and sms:
+                    temp_logs.append({"phone": phone, "sms": sms, "service": cli})
                     
         CURRENT_OTP_LOGS = temp_logs
         await asyncio.sleep(1.0)
@@ -572,7 +606,7 @@ async def get_number_selection(message: types.Message, state: FSMContext):
     # রেঞ্জ অপশন বাদ, সরাসরি ক্যাটাগরি মেনু
     await message.answer("📂 Select a service:", reply_markup=manual_services_keyboard())
 
-@dp.message(F.text == "💰 𝑩𝑨𝑳𝑨𝑵𝑪𝑬")
+@dp.message(F.text == "💰 𝑩𝑨𝑳𝑨টী")
 async def show_balance(message: types.Message, state: FSMContext):
     await state.clear()
     if await check_maintenance(message.from_user.id, message=message): return
@@ -1194,10 +1228,8 @@ async def manual_country_selected(callback: types.CallbackQuery):
     builder.row(types.InlineKeyboardButton(text="♻️ 𝑪𝑯𝑨𝑵𝑮𝑬 𝑵𝑼𝑴𝑩𝑬𝑹", callback_data=f"man_change_{svc_id}"), types.InlineKeyboardButton(text="🌍 𝑪𝑯𝑨𝑵𝑮𝑬 𝑪𝑶𝑼𝑵𝑻𝑹𝒀", callback_data=f"manual_svc_{svc_name}"))
     builder.row(types.InlineKeyboardButton(text="💬 𝑶𝑻𝑷 𝑮𝑹𝑶𝑼𝑷", url=OTP_GROUP_LINK))
     
-    # ⏳ Fetching number মেসেজ এডিট করার সিস্টেম (যাতে হ্যাং না হয়)
     try: await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
     except: await callback.message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
-    
     asyncio.create_task(poll_for_otp(uid, nums, duration_sec=1200, is_manual=True))
 
 @dp.callback_query(F.data.startswith("man_change_"))
@@ -1234,12 +1266,10 @@ async def man_change_numbers(callback: types.CallbackQuery):
 
     old_nums = active.get("nums", [])
     
-    # পুরনো নাম্বার ডাটাবেজে আগে ফেরত দেওয়া হচ্ছে
     if old_nums:
         for num in old_nums:
             cursor.execute("INSERT INTO manual_numbers (service_id, number) VALUES (?, ?)", (svc_id, num))
             
-    # এবার নতুন নাম্বার খোঁজা হবে, যাতে পুরনো নাম্বার আর না দেয়
     if old_nums:
         placeholders = ','.join('?' * len(old_nums))
         query = f"SELECT number FROM manual_numbers WHERE service_id=? AND number NOT IN ({placeholders}) ORDER BY RANDOM() LIMIT ?"
@@ -1251,7 +1281,6 @@ async def man_change_numbers(callback: types.CallbackQuery):
     new_nums_rows = cursor.execute(query, params).fetchall()
     new_nums = [r[0] for r in new_nums_rows]
 
-    # যদি নতুন ফ্রেশ নাম্বার না থাকে, তাহলে যাই থাকুক সেটাই দিবে
     if len(new_nums) < give_amount:
         query = "SELECT number FROM manual_numbers WHERE service_id=? ORDER BY RANDOM() LIMIT ?"
         params = [svc_id, give_amount]
@@ -1264,7 +1293,6 @@ async def man_change_numbers(callback: types.CallbackQuery):
         db.commit()
         return
         
-    # যে নাম্বারগুলো ইউজারকে দেওয়া হলো সেগুলো স্টোর থেকে ডিলিট
     cursor.execute("DELETE FROM manual_numbers WHERE service_id=? AND number IN ({})".format(','.join('?'*len(new_nums))), (svc_id, *new_nums))
     
     active["nums"] = new_nums
@@ -1282,10 +1310,8 @@ async def man_change_numbers(callback: types.CallbackQuery):
     builder.row(types.InlineKeyboardButton(text="♻️ 𝑪𝑯𝑨𝑵𝑮𝑬 𝑵𝑼𝑴𝑩𝑬𝑹", callback_data=f"man_change_{svc_id}"), types.InlineKeyboardButton(text="🌍 𝑪𝑯𝑨𝑵𝑮𝑬 𝑪𝑶𝑼𝑵𝑻𝑹𝒀", callback_data=f"manual_svc_{svc_name}"))
     builder.row(types.InlineKeyboardButton(text="💬 𝑶𝑻𝑷 𝑮𝑹𝑶𝑼𝑷", url=OTP_GROUP_LINK))
     
-    # ⏳ Fetching number মেসেজ এডিট করার সিস্টেম (যাতে হ্যাং না হয়)
     try: await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
     except: await callback.message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
-    
     await callback.answer("নাম্বার সফলভাবে পরিবর্তন হয়েছে!", show_alert=False)
     asyncio.create_task(poll_for_otp(uid, new_nums, duration_sec=1200, is_manual=True))
 
@@ -1294,7 +1320,6 @@ RANGE_PATTERN = re.compile(r'[\+]?(\d{5,12}[Xx]{2,5})')
 
 @dp.message()
 async def auto_detect_range(message: types.Message, state: FSMContext):
-    # Fix: To avoid locking up, check if a text starts with / command. If so skip.
     if message.text and message.text.startswith('/'): return
     if message.text in ["📞 𝑮𝑬𝑻 𝑵𝑼𝑴𝑩𝑬𝑹", "💰 𝑩𝑨𝑳𝑨𝑵𝑪𝑬", "⚙️ 𝑨𝑫𝑴𝑰𝑵 𝑷𝑨𝑵𝑬𝑳"]: return
     
@@ -1317,7 +1342,6 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     else:
         target_message = await callback_or_msg.answer("⏳ Fetching number...")
 
-    # ফিক্স: রেঞ্জের নাম্বারগুলো একটার পর একটা (Sequential) আনা হবে
     numbers = []
     for _ in range(limit):
         res = await fetch_one_number(range_val)
