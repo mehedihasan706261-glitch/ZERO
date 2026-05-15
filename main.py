@@ -17,6 +17,7 @@ import random
 
 # ================= CONFIGURATION =================
 TOKEN = "8647348457:AAEi5Kre2Df4Xeig80aZzsd_7zR9MFO739Y"
+# TELEGRAM_CHAT_ID = "-1003860008126" # (গ্রুপে ওটিপি পাঠানো বন্ধ করা হয়েছে, তাই এটি আর ব্যবহার হবে না)
 
 # --- Panel 1 (MNIT Network Only) ---
 API_BASE_URL = "https://x.mnitnetwork.com"
@@ -281,7 +282,6 @@ async def fetch_api_data(session, url, headers=None, params=None):
     except Exception: pass
     return None
 
-# ----------------- ORIGINAL FAST RANGE FETCHING LOGIC -----------------
 def parse_number_data(data):
     if not data: return None
     num = None
@@ -296,8 +296,8 @@ def parse_number_data(data):
             num = data[0].get('full_number') or data[0].get('number') or data[0].get('phone') or data[0].get('number_raw')
     
     if num:
-        num_str = str(num).replace(' ', '').replace('+', '')
-        return (num_str, num_str) # Returns tuple properly!
+        # BUG FIX: Ensure we only return a clean string, NOT A TUPLE
+        return str(num).replace(' ', '').replace('+', '')
     return None
 
 async def fetch_one_number(range_val: str, attempt: int = 0):
@@ -307,36 +307,31 @@ async def fetch_one_number(range_val: str, attempt: int = 0):
     
     try:
         session = await get_session()
-        async with session.get(url, params=payload, headers=headers, timeout=15, ssl=False) as resp:
+        async with session.get(url, params=payload, headers=headers, timeout=10, ssl=False) as resp:
             if resp.status == 200:
-                data = await resp.json()
-                res = parse_number_data(data)
+                res = parse_number_data(await resp.json())
                 if res: return res
                 
-        async with session.post(url, json=payload, headers=headers, timeout=15, ssl=False) as resp:
+        async with session.post(url, json=payload, headers=headers, timeout=10, ssl=False) as resp:
             if resp.status == 200:
-                data = await resp.json()
-                res = parse_number_data(data)
+                res = parse_number_data(await resp.json())
                 if res: return res
-    except Exception:
-        pass
+    except Exception: pass
         
     if attempt < 2:
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(1.0) 
         return await fetch_one_number(range_val, attempt=attempt+1)
     return None
 
 async def fetch_numbers_by_range(range_val: str, limit: int = 2):
-    # Concurrent fetching: Super fast!
-    tasks = [fetch_one_number(range_val) for _ in range(limit)]
-    results = await asyncio.gather(*tasks)
-    
-    unique_numbers = []
-    for res in results:
-        if res and res not in unique_numbers:
-            unique_numbers.append(res)
-    return unique_numbers
-# ---------------------------------------------------------------------
+    numbers = []
+    # Sequential fetch like original to avoid panel blocking requests
+    for _ in range(limit):
+        res = await fetch_one_number(range_val)
+        if res and res not in numbers:
+            numbers.append(res)
+        await asyncio.sleep(0.5) 
+    return numbers
 
 # ================= BACKGROUND TASKS (MASTER OTP FETCHER) =================
 async def master_otp_fetcher():
@@ -1203,10 +1198,8 @@ async def manual_country_selected(callback: types.CallbackQuery):
     cursor.execute("UPDATE users SET active_manual=?, manual_cooldowns=? WHERE id=?", (active_data, json.dumps(user_cds), uid))
     db.commit()
     
-    updated_time = datetime.now().strftime('%I:%M:%S %p')
     text = (f"🌐 <b>Country:</b> {flag} {c_name}\n💸 <b>Reward:</b> +৳{otp_rate} (Per OTP)\n━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"╔══════════════════════════╗\n║  ⏳ <i>Waiting for OTP...</i>  ║\n╚══════════════════════════╝\n"
-            f"🕒 <i>Updated: {updated_time}</i>")
+            f"╔══════════════════════════╗\n║  ⏳ <i>Waiting for OTP...</i>  ║\n╚══════════════════════════╝")
     
     builder = InlineKeyboardBuilder()
     for num in nums: builder.row(types.InlineKeyboardButton(text=f"📄 {num}", copy_text=CopyTextButton(text=num)))
@@ -1313,7 +1306,7 @@ RANGE_PATTERN = re.compile(r'[\+]?(\d{3,12}[Xx]{2,6})')
 @dp.message()
 async def auto_detect_range(message: types.Message, state: FSMContext):
     if message.text and message.text.startswith('/'): return
-    if message.text in ["📞 𝑮𝑬𝑻 𝑵𝑼𝑴𝑩𝑬𝑹", "💰 𝑩𝑨𝑳𝑨𝑵𝑪𝑬", "⚙️ 𝑨𝑫𝑴𝑰𝑵 𝑷𝑨্নে𝑳"]: return
+    if message.text in ["📞 𝑮𝑬𝑻 𝑵𝑼𝑴𝑩𝑬𝑹", "💰 𝑩𝑨𝑳𝑨𝑵𝑪𝑬", "⚙️ 𝑨𝑫𝑴𝑰𝑵 𝑷𝑨𝑵𝑬𝑳"]: return
     
     text_to_check = message.text or message.caption or ""
     if not text_to_check or await check_maintenance(message.from_user.id, message=message): return
@@ -1340,8 +1333,13 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     else:
         target_message = await callback_or_msg.answer(f"⏳ *Fetching numbers for `{range_val}`...*", parse_mode="Markdown")
 
-    # Concurrent Fetching (আপনার অরিজিনাল ফাস্ট সিস্টেম)
-    numbers = await fetch_numbers_by_range(range_val, limit=limit)
+    numbers = []
+    # এখানে আবার অরিজিনাল সিকুয়েনশিয়াল লজিকটা ব্যবহার করা হয়েছে, যেনো API ব্লক না করে।
+    for _ in range(limit):
+        res = await fetch_one_number(range_val)
+        if res and res not in numbers:
+            numbers.append(res)
+        await asyncio.sleep(0.5)
 
     if not numbers:
         try: await target_message.edit_text(f"❌ Could not fetch numbers for `{range_val}`. Try again.", parse_mode="Markdown")
