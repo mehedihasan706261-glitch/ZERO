@@ -321,16 +321,6 @@ async def fetch_one_number(range_val: str, attempt: int = 0):
         return await fetch_one_number(range_val, attempt=attempt+1)
     return None
 
-# Sequential Fetching for Range Numbers
-async def fetch_numbers_by_range(range_val: str, limit: int = 2):
-    results = []
-    for _ in range(limit):
-        res = await fetch_one_number(range_val)
-        if res and res not in results:
-            results.append(res)
-        await asyncio.sleep(0.5)
-    return results
-
 # ================= BACKGROUND TASKS (MASTER OTP FETCHER) =================
 async def master_otp_fetcher():
     global CURRENT_OTP_LOGS
@@ -342,9 +332,7 @@ async def master_otp_fetcher():
     
     while True:
         today = datetime.now().strftime('%Y-%m-%d')
-        # Panel 3 (Shahrukh)
         url_C = f"http://65.109.111.158/ints/agent/res/data_smscdr.php?fdate1={today}%2000:00:00&fdate2={today}%2023:59:59&sEcho=1&iColumns=9&iDisplayStart=0&iDisplayLength=30"
-        # Panel 4 (MSI)
         url_D = f"http://145.239.130.45/ints/agent/res/data_smscdr.php?fdate1={today}%2000:00:00&fdate2={today}%2023:59:59&sEcho=1&iColumns=9&iDisplayStart=0&iDisplayLength=30&sesskey={MSI_API_KEY}"
         
         res_a, res_b, res_c, res_d = await asyncio.gather(
@@ -606,7 +594,7 @@ async def get_number_selection(message: types.Message, state: FSMContext):
     # রেঞ্জ অপশন বাদ, সরাসরি ক্যাটাগরি মেনু
     await message.answer("📂 Select a service:", reply_markup=manual_services_keyboard())
 
-@dp.message(F.text == "💰 𝑩𝑨𝑳𝑨টী")
+@dp.message(F.text == "💰 𝑩𝑨𝑳𝑨𝑵𝑪𝑬")
 async def show_balance(message: types.Message, state: FSMContext):
     await state.clear()
     if await check_maintenance(message.from_user.id, message=message): return
@@ -1168,7 +1156,6 @@ async def manual_svc_selected(callback: types.CallbackQuery):
     if await check_maintenance(callback.from_user.id, callback=callback): return
     svc_name = callback.data[11:]
     
-    # শুধু কান্ট্রির নামের সামনে পতাকা থাকবে
     countries = cursor.execute("SELECT id, country_name, flag FROM manual_services WHERE service_name=? AND stock > 0", (svc_name,)).fetchall()
     if not countries:
         await callback.answer("No countries available for this service.", show_alert=True)
@@ -1316,7 +1303,7 @@ async def man_change_numbers(callback: types.CallbackQuery):
     asyncio.create_task(poll_for_otp(uid, new_nums, duration_sec=1200, is_manual=True))
 
 # ================= AUTO RANGE DETECTION =================
-RANGE_PATTERN = re.compile(r'[\+]?(\d{5,12}[Xx]{2,5})')
+RANGE_PATTERN = re.compile(r'[\+]?(\d{3,12}[Xx]{2,6})')
 
 @dp.message()
 async def auto_detect_range(message: types.Message, state: FSMContext):
@@ -1328,9 +1315,12 @@ async def auto_detect_range(message: types.Message, state: FSMContext):
 
     match = RANGE_PATTERN.search(text_to_check)
     if match:
+        try: await message.delete() # ইউজার মেসেজ ডিলিট
+        except: pass
+        
         range_val = match.group(1).upper().replace('X', 'X')
         if range_val.startswith('+'): range_val = range_val[1:]
-        await message.answer(f"🔍 Auto-detected range: `{range_val}`", parse_mode="Markdown")
+        
         await send_range_numbers_message(message, range_val)
 
 async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int = 2):
@@ -1338,9 +1328,12 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     
     if isinstance(callback_or_msg, types.CallbackQuery):
         target_message = callback_or_msg.message
-        await callback_or_msg.answer(f"⏳ Fetching number...")
+        try: await target_message.edit_text(f"⏳ *Fetching numbers for `{range_val}`...*", parse_mode="Markdown")
+        except: pass
+        try: await callback_or_msg.answer("Fetching...")
+        except: pass
     else:
-        target_message = await callback_or_msg.answer("⏳ Fetching number...")
+        target_message = await callback_or_msg.answer(f"⏳ *Fetching numbers for `{range_val}`...*", parse_mode="Markdown")
 
     numbers = []
     for _ in range(limit):
@@ -1350,7 +1343,7 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
         await asyncio.sleep(0.5)
 
     if not numbers:
-        try: await target_message.edit_text(f"❌ Could not fetch numbers for `{range_val}`. Try again.")
+        try: await target_message.edit_text(f"❌ Could not fetch numbers for `{range_val}`. Try again.", parse_mode="Markdown")
         except: pass
         return None
 
