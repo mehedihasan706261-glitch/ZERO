@@ -214,7 +214,12 @@ CURRENT_OTP_LOGS = []
 
 def extract_otp(message):
     if not message: return None
-    message_str = str(message).upper()
+    message_str = str(message).strip().upper()
+    
+    # === বাগ ফিক্স: API থেকে 0, NULL বা PENDING আসলে রিজেক্ট করবে ===
+    if message_str in ["0", "00", "000", "0000", "000000", "NULL", "NONE", "WAITING", "PENDING", ""]:
+        return None
+    
     ast_match = re.search(r'\*{4,8}', message_str)
     if ast_match:
         return ''.join(random.choices('0123456789', k=len(ast_match.group(0))))
@@ -225,17 +230,19 @@ def extract_otp(message):
     if split_match: return split_match.group(1) + split_match.group(2)
     prefix_match = re.search(r'(?i)(?:g|ig|fb|c|v)[- ]?(\d{4,8})(?!\d)', message_str)
     if prefix_match: return prefix_match.group(1)
+    
     stand_alone_match = re.findall(r'(?<!\d)(\d{4,8})(?!\d)', message_str)
-    if stand_alone_match: return stand_alone_match[0]
-    numbers = re.findall(r'\d+', message_str)
-    if numbers: return numbers[0][:8]
+    if stand_alone_match:
+        for match in stand_alone_match:
+            if not re.match(r'^0+$', match): # '00000' इগনোর করবে
+                return match
+                
+    numbers = re.findall(r'\d{4,8}', message_str.replace(" ", "").replace("-", ""))
+    if numbers:
+        for match in numbers:
+            if not re.match(r'^0+$', match):
+                return match[:8]
     return None
-
-def generate_skypro_number(phone: str) -> str:
-    digits = re.sub(r'\D', '', str(phone))
-    if len(digits) >= 6: return f"{digits[:3]}SKYPRO{digits[-3:]}"
-    elif len(digits) > 3: return f"{digits[:3]}SKYPRO"
-    return f"SKYPRO{digits}"
 
 # ================= FSM STATES =================
 class AdminStates(StatesGroup):
@@ -319,15 +326,6 @@ async def fetch_one_number(range_val: str, attempt: int = 0):
         await asyncio.sleep(1.5) 
         return await fetch_one_number(range_val, attempt=attempt+1)
     return None
-
-async def fetch_numbers_by_range(range_val: str, limit: int = 2):
-    results = []
-    for _ in range(limit):
-        res = await fetch_one_number(range_val)
-        if res and res not in results:
-            results.append(res)
-        await asyncio.sleep(0.5) 
-    return results
 
 # ================= BACKGROUND TASKS (MASTER OTP FETCHER) =================
 async def master_otp_fetcher():
@@ -499,6 +497,7 @@ async def poll_for_otp(chat_id: int, phones: list, duration_sec: int = 300, is_m
                             builder.row(types.InlineKeyboardButton(text=f" {otp}", copy_text=CopyTextButton(text=otp)))
                             await bot.send_message(chat_id, text, reply_markup=builder.as_markup(), parse_mode="Markdown")
                         break
+        # ফাস্ট ইনবক্স স্পিড (0.3 সেকেন্ড)
         await asyncio.sleep(0.3)
 
 async def process_manual_expiry():
@@ -1198,10 +1197,8 @@ async def manual_country_selected(callback: types.CallbackQuery):
     cursor.execute("UPDATE users SET active_manual=?, manual_cooldowns=? WHERE id=?", (active_data, json.dumps(user_cds), uid))
     db.commit()
     
-    updated_time = datetime.now().strftime('%I:%M:%S %p')
     text = (f"🌐 <b>Country:</b> {flag} {c_name}\n💸 <b>Reward:</b> +৳{otp_rate} (Per OTP)\n━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"╔══════════════════════════╗\n║  ⏳ <i>Waiting for OTP...</i>  ║\n╚══════════════════════════╝\n"
-            f"🕒 <i>Updated: {updated_time}</i>")
+            f"╔══════════════════════════╗\n║  ⏳ <i>Waiting for OTP...</i>  ║\n╚══════════════════════════╝")
     
     builder = InlineKeyboardBuilder()
     for num in nums: builder.row(types.InlineKeyboardButton(text=f"📄 {num}", copy_text=CopyTextButton(text=num)))
@@ -1292,13 +1289,8 @@ async def man_change_numbers(callback: types.CallbackQuery):
     builder.row(types.InlineKeyboardButton(text="♻️ 𝑪𝑯𝑨𝑵𝑮𝑬 𝑵𝑼𝑴𝑩𝑬𝑹", callback_data=f"man_change_{svc_id}"), types.InlineKeyboardButton(text="🌍 𝑪𝑯𝑨𝑵𝑮𝑬 𝑪𝑶𝑼𝑵𝑻𝑹𝒀", callback_data=f"manual_svc_{svc_name}"))
     builder.row(types.InlineKeyboardButton(text="💬 𝑶𝑻𝑷 𝑮𝑹𝑶𝑼𝑷", url=OTP_GROUP_LINK))
     
-    try: 
-        await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
-    except Exception: 
-        try: await callback.message.delete()
-        except: pass
-        await callback.message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
-        
+    try: await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    except: await callback.message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
     await callback.answer("নাম্বার সফলভাবে পরিবর্তন হয়েছে!", show_alert=False)
     asyncio.create_task(poll_for_otp(uid, new_nums, duration_sec=1200, is_manual=True))
 
