@@ -76,14 +76,6 @@ cursor.execute("""CREATE TABLE IF NOT EXISTS withdraw_requests (
     status TEXT DEFAULT 'pending',
     requested_at TEXT
 )""")
-cursor.execute("""CREATE TABLE IF NOT EXISTS used_numbers (
-    user_id INTEGER,
-    number_id TEXT,
-    phone_number TEXT,
-    service_id INTEGER,
-    used_at TEXT,
-    PRIMARY KEY (user_id, number_id)
-)""")
 cursor.execute("CREATE TABLE IF NOT EXISTS admins (user_id TEXT PRIMARY KEY)")
 cursor.execute("""CREATE TABLE IF NOT EXISTS otp_success_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -178,16 +170,11 @@ COUNTRY_PREFIXES = {
 
 def get_country_from_phone(phone: str) -> tuple:
     digits = ''.join(filter(str.isdigit, phone))
-    if not digits: return "BD", "🇧🇩"
+    if not digits: return "GLOBAL", "🌍"
     for length in range(5, 0, -1):
-        prefix = digits[:length]
-        if prefix in COUNTRY_PREFIXES:
-            return COUNTRY_PREFIXES[prefix]
-    for length in range(3, 0, -1):
-        prefix = digits[:length]
-        if prefix in COUNTRY_PREFIXES:
-            return COUNTRY_PREFIXES[prefix]
-    return "BD", "🇧🇩"
+        if digits[:length] in COUNTRY_PREFIXES:
+            return COUNTRY_PREFIXES[digits[:length]]
+    return "GLOBAL", "🌍"
 
 def format_number_with_flag(phone: str) -> str:
     _, flag = get_country_from_phone(phone)
@@ -202,13 +189,11 @@ def get_flag_emoji(country_code: str) -> str:
     return chr(ord('🇦') + (ord(country_code[0].upper()) - ord('A'))) + chr(ord('🇦') + (ord(country_code[1].upper()) - ord('A')))
 
 def is_maintenance_mode() -> bool:
-    cursor.execute("SELECT value FROM config WHERE key='maintenance_mode'")
-    row = cursor.fetchone()
+    row = cursor.execute("SELECT value FROM config WHERE key='maintenance_mode'").fetchone()
     return row and row[0] == 'on'
 
 def is_withdraw_enabled() -> bool:
-    cursor.execute("SELECT value FROM config WHERE key='withdraw_enabled'")
-    row = cursor.fetchone()
+    row = cursor.execute("SELECT value FROM config WHERE key='withdraw_enabled'").fetchone()
     return row and row[0] == 'on'
 
 async def check_maintenance(user_id: int, message: types.Message = None, callback: types.CallbackQuery = None):
@@ -296,44 +281,62 @@ async def fetch_api_data(session, url, headers=None, params=None):
     except Exception: pass
     return None
 
-# ================= আপনার দেওয়া অরিজিনাল নাম্বার ফেচিং লজিক =================
+# ----------------- ORIGINAL FAST RANGE FETCHING LOGIC -----------------
+def parse_number_data(data):
+    if not data: return None
+    num = None
+    if isinstance(data, dict):
+        inner = data.get('data', data)
+        if isinstance(inner, list) and len(inner) > 0:
+            inner = inner[0]
+        if isinstance(inner, dict):
+            num = inner.get('full_number') or inner.get('number') or inner.get('phone') or inner.get('number_raw')
+    elif isinstance(data, list) and len(data) > 0:
+        if isinstance(data[0], dict):
+            num = data[0].get('full_number') or data[0].get('number') or data[0].get('phone') or data[0].get('number_raw')
+    
+    if num:
+        num_str = str(num).replace(' ', '').replace('+', '')
+        return (num_str, num_str) # Returns tuple properly!
+    return None
+
 async def fetch_one_number(range_val: str, attempt: int = 0):
     url = f"{API_BASE_URL}/mapi/v1/public/getnum/number"
-    headers = {"mapikey": API_KEY, "Content-Type": "application/json"}
-    payload = {"range": range_val}
+    headers = {"mapikey": API_KEY, "Accept": "application/json"}
+    payload = {"range": str(range_val).strip()}
+    
     try:
         session = await get_session()
+        async with session.get(url, params=payload, headers=headers, timeout=15, ssl=False) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                res = parse_number_data(data)
+                if res: return res
+                
         async with session.post(url, json=payload, headers=headers, timeout=15, ssl=False) as resp:
             if resp.status == 200:
                 data = await resp.json()
-                if isinstance(data, dict):
-                    num_data = data.get('data', {}) if 'data' in data else data
-                    num = num_data.get('full_number') or num_data.get('number') or num_data.get('phone')
-                    if num:
-                        return str(num)
-            elif resp.status == 405: # Fallback to GET method if POST is not allowed
-                async with session.get(url, params=payload, headers={"mapikey": API_KEY}, timeout=15, ssl=False) as resp_get:
-                    if resp_get.status == 200:
-                        data = await resp_get.json()
-                        if isinstance(data, dict):
-                            num_data = data.get('data', {}) if 'data' in data else data
-                            num = num_data.get('full_number') or num_data.get('number') or num_data.get('phone')
-                            if num:
-                                return str(num)
-        if attempt < 2:
-            await asyncio.sleep(2)
-            return await fetch_one_number(range_val, attempt=attempt+1)
-    except Exception as e:
-        if attempt < 2:
-            await asyncio.sleep(2)
-            return await fetch_one_number(range_val, attempt=attempt+1)
+                res = parse_number_data(data)
+                if res: return res
+    except Exception:
+        pass
+        
+    if attempt < 2:
+        await asyncio.sleep(1.0)
+        return await fetch_one_number(range_val, attempt=attempt+1)
     return None
 
 async def fetch_numbers_by_range(range_val: str, limit: int = 2):
+    # Concurrent fetching: Super fast!
     tasks = [fetch_one_number(range_val) for _ in range(limit)]
     results = await asyncio.gather(*tasks)
-    # Remove duplicates and Nones
-    return list(set([res for res in results if res is not None]))
+    
+    unique_numbers = []
+    for res in results:
+        if res and res not in unique_numbers:
+            unique_numbers.append(res)
+    return unique_numbers
+# ---------------------------------------------------------------------
 
 # ================= BACKGROUND TASKS (MASTER OTP FETCHER) =================
 async def master_otp_fetcher():
@@ -1310,7 +1313,7 @@ RANGE_PATTERN = re.compile(r'[\+]?(\d{3,12}[Xx]{2,6})')
 @dp.message()
 async def auto_detect_range(message: types.Message, state: FSMContext):
     if message.text and message.text.startswith('/'): return
-    if message.text in ["📞 𝑮𝑬𝑻 𝑵𝑼𝑴𝑩𝑬𝑹", "💰 𝑩𝑨𝑳𝑨𝑵𝑪𝑬", "⚙️ 𝑨𝑫𝑴𝑰𝑵 𝑷𝑨𝑵𝑬𝑳"]: return
+    if message.text in ["📞 𝑮𝑬𝑻 𝑵𝑼𝑴𝑩𝑬𝑹", "💰 𝑩𝑨𝑳𝑨𝑵𝑪𝑬", "⚙️ 𝑨𝑫𝑴𝑰𝑵 𝑷𝑨্নে𝑳"]: return
     
     text_to_check = message.text or message.caption or ""
     if not text_to_check or await check_maintenance(message.from_user.id, message=message): return
@@ -1337,12 +1340,8 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     else:
         target_message = await callback_or_msg.answer(f"⏳ *Fetching numbers for `{range_val}`...*", parse_mode="Markdown")
 
-    numbers = []
-    for _ in range(limit):
-        res = await fetch_one_number(range_val)
-        if res and res not in numbers:
-            numbers.append(res)
-        await asyncio.sleep(1.0) 
+    # Concurrent Fetching (আপনার অরিজিনাল ফাস্ট সিস্টেম)
+    numbers = await fetch_numbers_by_range(range_val, limit=limit)
 
     if not numbers:
         try: await target_message.edit_text(f"❌ Could not fetch numbers for `{range_val}`. Try again.", parse_mode="Markdown")
@@ -1350,7 +1349,7 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
         return None
 
     if row: name, flag, country_code = row
-    else: country_code, flag = get_country_from_phone(numbers[0][1])
+    else: country_code, flag = get_country_from_phone(numbers[0])
 
     country_map = {"BD": "Bangladesh", "US": "United States", "IN": "India"}
     country_name = country_map.get(country_code, country_code)
@@ -1359,7 +1358,7 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     text = f"{flag} *{country_name}*➔`[{range_val}]`👀\n━━━━━━━━━━━━━━━━━━━━━━━\n⏳ *Waiting for OTP....*\n🕒 _Updated: {updated_time}_"
     
     builder = InlineKeyboardBuilder()
-    for idx, (nid, phone) in enumerate(numbers, 1):
+    for idx, phone in enumerate(numbers, 1):
         builder.row(types.InlineKeyboardButton(text=f" {format_number_with_flag(phone)}", copy_text=CopyTextButton(text=phone)))
 
     builder.row(
@@ -1377,7 +1376,7 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
         else:
             sent = await callback_or_msg.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
 
-    asyncio.create_task(poll_for_otp(sent.chat.id, [p[1] for p in numbers], duration_sec=300, is_manual=False))
+    asyncio.create_task(poll_for_otp(sent.chat.id, numbers, duration_sec=300, is_manual=False))
     return sent
 
 @dp.callback_query(F.data.startswith("chg_range_"))
