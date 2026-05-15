@@ -170,7 +170,7 @@ COUNTRY_PREFIXES = {
 }
 
 def get_country_from_phone(phone: str) -> tuple:
-    digits = ''.join(filter(str.isdigit, str(phone)))
+    digits = ''.join(filter(str.isdigit, phone))
     if not digits: return "GLOBAL", "🌍"
     for length in range(5, 0, -1):
         if digits[:length] in COUNTRY_PREFIXES:
@@ -296,6 +296,7 @@ def parse_number_data(data):
             num = data[0].get('full_number') or data[0].get('number') or data[0].get('phone') or data[0].get('number_raw')
     
     if num:
+        # বাগ ফিক্স: স্ট্রিং পাঠানো হচ্ছে যাতে বাটন ক্র্যাশ না করে
         return str(num).replace(' ', '').replace('+', '')
     return None
 
@@ -318,7 +319,7 @@ async def fetch_one_number(range_val: str, attempt: int = 0):
     except Exception: pass
         
     if attempt < 2:
-        await asyncio.sleep(1.0) 
+        await asyncio.sleep(1.5) 
         return await fetch_one_number(range_val, attempt=attempt+1)
     return None
 
@@ -345,6 +346,7 @@ async def master_otp_fetcher():
         
         temp_logs = []
         
+        # Panel 1
         if res_a:
             data_obj = res_a.get("data", [])
             logs = data_obj.get("otps", []) if isinstance(data_obj, dict) else data_obj
@@ -356,6 +358,7 @@ async def master_otp_fetcher():
                         "service": log.get("operator", log.get("service", "FB"))
                     })
                     
+        # Panel 2
         if res_b and res_b.get("status") == "success":
             for log in res_b.get("data", []):
                 temp_logs.append({
@@ -364,6 +367,7 @@ async def master_otp_fetcher():
                     "service": log.get("cli", "FB")
                 })
                 
+        # Panel 3
         if res_c:
             logs_c = res_c.get("aaData") or res_c.get("data") or []
             for row in logs_c:
@@ -379,6 +383,7 @@ async def master_otp_fetcher():
                 sms = re.sub(r'<[^>]+>', '', sms)
                 if phone and sms: temp_logs.append({"phone": phone, "sms": sms, "service": cli})
         
+        # Panel 4
         if res_d:
             logs_d = res_d.get("aaData") or res_d.get("data") or []
             for row in logs_d:
@@ -1300,9 +1305,6 @@ async def auto_detect_range(message: types.Message, state: FSMContext):
 
     match = RANGE_PATTERN.search(text_to_check)
     if match:
-        try: await message.delete() 
-        except: pass
-        
         range_val = match.group(1).upper().replace('X', 'X')
         if range_val.startswith('+'): range_val = range_val[1:]
         
@@ -1326,7 +1328,7 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
         res = await fetch_one_number(range_val)
         if res and res not in numbers:
             numbers.append(res)
-        await asyncio.sleep(1.0) 
+        await asyncio.sleep(0.5)
 
     if not numbers:
         try: await target_message.edit_text(f"❌ Could not fetch numbers for `{range_val}`. Try again.", parse_mode="Markdown")
@@ -1359,6 +1361,11 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
             sent = await callback_or_msg.message.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
         else:
             sent = await callback_or_msg.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
+
+    # ডিলিট অপশন এখানে অ্যাড করা হলো
+    if isinstance(callback_or_msg, types.Message):
+        try: await callback_or_msg.delete() 
+        except: pass
 
     asyncio.create_task(poll_for_otp(sent.chat.id, [p for p in numbers], duration_sec=300, is_manual=False))
     return sent
