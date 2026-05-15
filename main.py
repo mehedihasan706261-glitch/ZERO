@@ -216,7 +216,7 @@ def extract_otp(message):
     if not message: return None
     message_str = str(message).strip().upper()
     
-    # === বাগ ফিক্স: API থেকে 0, NULL বা PENDING আসলে রিজেক্ট করবে ===
+    # === API থেকে 0, NULL বা PENDING আসলে রিজেক্ট করবে ===
     if message_str in ["0", "00", "000", "0000", "000000", "NULL", "NONE", "WAITING", "PENDING", ""]:
         return None
     
@@ -234,7 +234,7 @@ def extract_otp(message):
     stand_alone_match = re.findall(r'(?<!\d)(\d{4,8})(?!\d)', message_str)
     if stand_alone_match:
         for match in stand_alone_match:
-            if not re.match(r'^0+$', match): # '00000' इগনোর করবে
+            if not re.match(r'^0+$', match): 
                 return match
                 
     numbers = re.findall(r'\d{4,8}', message_str.replace(" ", "").replace("-", ""))
@@ -243,6 +243,12 @@ def extract_otp(message):
             if not re.match(r'^0+$', match):
                 return match[:8]
     return None
+
+def generate_skypro_number(phone: str) -> str:
+    digits = re.sub(r'\D', '', str(phone))
+    if len(digits) >= 6: return f"{digits[:3]}SKYPRO{digits[-3:]}"
+    elif len(digits) > 3: return f"{digits[:3]}SKYPRO"
+    return f"SKYPRO{digits}"
 
 # ================= FSM STATES =================
 class AdminStates(StatesGroup):
@@ -323,7 +329,7 @@ async def fetch_one_number(range_val: str, attempt: int = 0):
     except Exception: pass
         
     if attempt < 2:
-        await asyncio.sleep(1.5) 
+        await asyncio.sleep(1.0)
         return await fetch_one_number(range_val, attempt=attempt+1)
     return None
 
@@ -375,9 +381,13 @@ async def master_otp_fetcher():
         if res_c:
             logs_c = res_c.get("aaData") or res_c.get("data") or []
             for row in logs_c:
-                phone, sms, cli = "", "", "UNKNOWN"
+                phone = ""
+                sms = ""
+                cli = "UNKNOWN"
                 if isinstance(row, list) and len(row) >= 5:
-                    phone, cli, sms = str(row[2]).strip(), str(row[3]).strip(), str(row[4]).strip()
+                    phone = str(row[2]).strip()
+                    cli = str(row[3]).strip()
+                    sms = str(row[4]).strip()
                 elif isinstance(row, dict):
                     phone = str(row.get("destination", row.get("number", "")))
                     sms = str(row.get("message", row.get("sms", "")))
@@ -385,15 +395,21 @@ async def master_otp_fetcher():
                 
                 phone = re.sub(r'<[^>]+>', '', phone).replace("+", "")
                 sms = re.sub(r'<[^>]+>', '', sms)
-                if phone and sms: temp_logs.append({"phone": phone, "sms": sms, "service": cli})
+                cli = re.sub(r'<[^>]+>', '', cli)
+                if phone and sms:
+                    temp_logs.append({"phone": phone, "sms": sms, "service": cli})
         
         # Panel 4
         if res_d:
             logs_d = res_d.get("aaData") or res_d.get("data") or []
             for row in logs_d:
-                phone, sms, cli = "", "", "UNKNOWN"
+                phone = ""
+                sms = ""
+                cli = "UNKNOWN"
                 if isinstance(row, list) and len(row) >= 5:
-                    phone, cli, sms = str(row[2]).strip(), str(row[3]).strip(), str(row[4]).strip()
+                    phone = str(row[2]).strip()
+                    cli = str(row[3]).strip()
+                    sms = str(row[4]).strip()
                 elif isinstance(row, dict):
                     phone = str(row.get("destination", row.get("number", "")))
                     sms = str(row.get("message", row.get("sms", "")))
@@ -401,7 +417,9 @@ async def master_otp_fetcher():
                 
                 phone = re.sub(r'<[^>]+>', '', phone).replace("+", "")
                 sms = re.sub(r'<[^>]+>', '', sms)
-                if phone and sms: temp_logs.append({"phone": phone, "sms": sms, "service": cli})
+                cli = re.sub(r'<[^>]+>', '', cli)
+                if phone and sms:
+                    temp_logs.append({"phone": phone, "sms": sms, "service": cli})
                     
         CURRENT_OTP_LOGS = temp_logs
         await asyncio.sleep(1.0)
@@ -497,7 +515,6 @@ async def poll_for_otp(chat_id: int, phones: list, duration_sec: int = 300, is_m
                             builder.row(types.InlineKeyboardButton(text=f" {otp}", copy_text=CopyTextButton(text=otp)))
                             await bot.send_message(chat_id, text, reply_markup=builder.as_markup(), parse_mode="Markdown")
                         break
-        # ফাস্ট ইনবক্স স্পিড (0.3 সেকেন্ড)
         await asyncio.sleep(0.3)
 
 async def process_manual_expiry():
@@ -1197,8 +1214,10 @@ async def manual_country_selected(callback: types.CallbackQuery):
     cursor.execute("UPDATE users SET active_manual=?, manual_cooldowns=? WHERE id=?", (active_data, json.dumps(user_cds), uid))
     db.commit()
     
+    updated_time = datetime.now().strftime('%I:%M:%S %p')
     text = (f"🌐 <b>Country:</b> {flag} {c_name}\n💸 <b>Reward:</b> +৳{otp_rate} (Per OTP)\n━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"╔══════════════════════════╗\n║  ⏳ <i>Waiting for OTP...</i>  ║\n╚══════════════════════════╝")
+            f"╔══════════════════════════╗\n║  ⏳ <i>Waiting for OTP...</i>  ║\n╚══════════════════════════╝\n"
+            f"🕒 <i>Updated: {updated_time}</i>")
     
     builder = InlineKeyboardBuilder()
     for num in nums: builder.row(types.InlineKeyboardButton(text=f"📄 {num}", copy_text=CopyTextButton(text=num)))
@@ -1289,8 +1308,13 @@ async def man_change_numbers(callback: types.CallbackQuery):
     builder.row(types.InlineKeyboardButton(text="♻️ 𝑪𝑯𝑨𝑵𝑮𝑬 𝑵𝑼𝑴𝑩𝑬𝑹", callback_data=f"man_change_{svc_id}"), types.InlineKeyboardButton(text="🌍 𝑪𝑯𝑨𝑵𝑮𝑬 𝑪𝑶𝑼𝑵𝑻𝑹𝒀", callback_data=f"manual_svc_{svc_name}"))
     builder.row(types.InlineKeyboardButton(text="💬 𝑶𝑻𝑷 𝑮𝑹𝑶𝑼𝑷", url=OTP_GROUP_LINK))
     
-    try: await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
-    except: await callback.message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    try: 
+        await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    except Exception: 
+        try: await callback.message.delete()
+        except: pass
+        await callback.message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        
     await callback.answer("নাম্বার সফলভাবে পরিবর্তন হয়েছে!", show_alert=False)
     asyncio.create_task(poll_for_otp(uid, new_nums, duration_sec=1200, is_manual=True))
 
@@ -1327,12 +1351,14 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     else:
         target_message = await callback_or_msg.answer(f"⏳ *Fetching numbers for `{range_val}`...*", parse_mode="Markdown")
 
+    # Sequential Fetching using async gather
+    tasks = [fetch_one_number(range_val) for _ in range(limit)]
+    results = await asyncio.gather(*tasks)
+    
     numbers = []
-    for _ in range(limit):
-        res = await fetch_one_number(range_val)
+    for res in results:
         if res and res not in numbers:
             numbers.append(res)
-        await asyncio.sleep(1.5)
 
     if not numbers:
         try: await target_message.edit_text(f"❌ Could not fetch numbers for `{range_val}`. Try again.", parse_mode="Markdown")
@@ -1342,15 +1368,7 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     if row: name, flag, country_code = row
     else: country_code, flag = get_country_from_phone(numbers[0][1])
 
-    country_map = {
-        "BD": "Bangladesh", "US": "United States", "IN": "India", "MM": "Myanmar",
-        "PK": "Pakistan", "RU": "Russia", "UA": "Ukraine", "GB": "United Kingdom",
-        "FR": "France", "DE": "Germany", "IT": "Italy", "ES": "Spain",
-        "BR": "Brazil", "AR": "Argentina", "MX": "Mexico", "ID": "Indonesia",
-        "PH": "Philippines", "VN": "Vietnam", "TH": "Thailand", "TR": "Turkey",
-        "EG": "Egypt", "NG": "Nigeria", "ZA": "South Africa", "KE": "Kenya",
-        "SL": "Sierra Leone", "LR": "Liberia", "GH": "Ghana", "CM": "Cameroon"
-    }
+    country_map = {"BD": "Bangladesh", "US": "United States", "IN": "India"}
     country_name = country_map.get(country_code, country_code)
 
     updated_time = datetime.now().strftime('%I:%M:%S %p')
