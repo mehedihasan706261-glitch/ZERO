@@ -177,17 +177,12 @@ COUNTRY_PREFIXES = {
 }
 
 def get_country_from_phone(phone: str) -> tuple:
-    digits = ''.join(filter(str.isdigit, phone))
-    if not digits: return "BD", "🇧🇩"
+    digits = ''.join(filter(str.isdigit, str(phone)))
+    if not digits: return "GLOBAL", "🌍"
     for length in range(5, 0, -1):
-        prefix = digits[:length]
-        if prefix in COUNTRY_PREFIXES:
-            return COUNTRY_PREFIXES[prefix]
-    for length in range(3, 0, -1):
-        prefix = digits[:length]
-        if prefix in COUNTRY_PREFIXES:
-            return COUNTRY_PREFIXES[prefix]
-    return "BD", "🇧🇩"
+        if digits[:length] in COUNTRY_PREFIXES:
+            return COUNTRY_PREFIXES[digits[:length]]
+    return "GLOBAL", "🌍"
 
 def format_number_with_flag(phone: str) -> str:
     _, flag = get_country_from_phone(phone)
@@ -295,45 +290,57 @@ async def fetch_api_data(session, url, headers=None, params=None):
     return None
 
 
-# ================= অরিজিনাল নাম্বার ফেচিং লজিক (যা আপনি দিয়েছিলেন) =================
+# ================= অরিজিনাল রেঞ্জ নাম্বার ফেচিং লজিক (১০০% পারফেক্ট) =================
+def parse_number_data(data):
+    if not data: return None
+    num = None
+    if isinstance(data, dict):
+        inner = data.get('data', data)
+        if isinstance(inner, list) and len(inner) > 0:
+            inner = inner[0]
+        if isinstance(inner, dict):
+            num = inner.get('full_number') or inner.get('number') or inner.get('phone') or inner.get('number_raw')
+    elif isinstance(data, list) and len(data) > 0:
+        if isinstance(data[0], dict):
+            num = data[0].get('full_number') or data[0].get('number') or data[0].get('phone') or data[0].get('number_raw')
+    
+    if num:
+        num_str = str(num).replace(' ', '').replace('+', '')
+        return (num_str, num_str) # Tuple format
+    return None
+
 async def fetch_one_number(range_val: str, attempt: int = 0):
     url = f"{API_BASE_URL}/mapi/v1/public/getnum/number"
-    headers = {"mapikey": API_KEY, "Content-Type": "application/json"}
-    payload = {"range": range_val}
+    headers = {"mapikey": API_KEY, "Accept": "application/json"} 
+    payload = {"range": str(range_val).strip()}
+    
     try:
         session = await get_session()
+        async with session.get(url, params=payload, headers=headers, timeout=15, ssl=False) as resp:
+            if resp.status == 200:
+                res = parse_number_data(await resp.json())
+                if res: return res
+                
         async with session.post(url, json=payload, headers=headers, timeout=15, ssl=False) as resp:
             if resp.status == 200:
-                data = await resp.json()
-                if isinstance(data, dict):
-                    num_data = data.get('data', {}) if 'data' in data else data
-                    num = num_data.get('full_number') or num_data.get('number') or num_data.get('phone')
-                    if num:
-                        return (str(num), str(num))
-            elif resp.status == 405: # Fallback to GET method if POST is not allowed
-                async with session.get(url, params=payload, headers={"mapikey": API_KEY}, timeout=15, ssl=False) as resp_get:
-                    if resp_get.status == 200:
-                        data = await resp_get.json()
-                        if isinstance(data, dict):
-                            num_data = data.get('data', {}) if 'data' in data else data
-                            num = num_data.get('full_number') or num_data.get('number') or num_data.get('phone')
-                            if num:
-                                return (str(num), str(num))
-        if attempt < 2:
-            await asyncio.sleep(2)
-            return await fetch_one_number(range_val, attempt=attempt+1)
-    except Exception as e:
-        if attempt < 2:
-            await asyncio.sleep(2)
-            return await fetch_one_number(range_val, attempt=attempt+1)
+                res = parse_number_data(await resp.json())
+                if res: return res
+    except Exception: pass
+        
+    if attempt < 2:
+        await asyncio.sleep(1.0)
+        return await fetch_one_number(range_val, attempt=attempt+1)
     return None
 
 async def fetch_numbers_by_range(range_val: str, limit: int = 2):
-    tasks = [fetch_one_number(range_val) for _ in range(limit)]
-    results = await asyncio.gather(*tasks)
-    return [res for res in results if res is not None]
+    results = []
+    for _ in range(limit):
+        res = await fetch_one_number(range_val)
+        if res and res not in results:
+            results.append(res)
+        await asyncio.sleep(0.5) 
+    return results
 # ==============================================================================
-
 
 # ================= BACKGROUND TASKS (MASTER OTP FETCHER) =================
 async def master_otp_fetcher():
@@ -487,8 +494,8 @@ async def poll_for_otp(chat_id: int, phones: list, duration_sec: int = 300, is_m
                                 f"╚══════════════════════════╝"
                             )
                             builder = InlineKeyboardBuilder()
-                            builder.row(types.InlineKeyboardButton(text=f"{flag} {p}", copy_text=CopyTextButton(text=p)))
-                            builder.row(types.InlineKeyboardButton(text=f"🔑 {otp}", copy_text=CopyTextButton(text=otp)))
+                            builder.row(types.InlineKeyboardButton(text=f"{flag} {p}", copy_text=CopyTextButton(text=p), style="primary"))
+                            builder.row(types.InlineKeyboardButton(text=f"🔑 {otp}", copy_text=CopyTextButton(text=otp), style="success"))
                             await bot.send_message(chat_id, text, reply_markup=builder.as_markup(), parse_mode="HTML")
                         else:
                             svc_short = service[:2].upper()
@@ -497,8 +504,8 @@ async def poll_for_otp(chat_id: int, phones: list, duration_sec: int = 300, is_m
                             text = f"╔{'═' * border_len}╗\n║ {content} ║\n╚{'═' * border_len}╝"
                             
                             builder = InlineKeyboardBuilder()
-                            builder.row(types.InlineKeyboardButton(text=f"{flag} {p}", copy_text=CopyTextButton(text=p)))
-                            builder.row(types.InlineKeyboardButton(text=f" {otp}", copy_text=CopyTextButton(text=otp)))
+                            builder.row(types.InlineKeyboardButton(text=f"{flag} {p}", copy_text=CopyTextButton(text=p), style="primary"))
+                            builder.row(types.InlineKeyboardButton(text=f" {otp}", copy_text=CopyTextButton(text=otp), style="success"))
                             await bot.send_message(chat_id, text, reply_markup=builder.as_markup(), parse_mode="Markdown")
                         break
         await asyncio.sleep(0.3)
@@ -528,48 +535,48 @@ async def process_manual_expiry():
 # ================= KEYBOARDS & MENUS =================
 def main_menu(user_id: int):
     builder = ReplyKeyboardBuilder()
-    builder.row(types.KeyboardButton(text="📞 𝑮𝑬𝑻 𝑵𝑼𝑴𝑩𝑬𝑹"), types.KeyboardButton(text="💰 𝑩𝑨𝑳𝑨𝑵𝑪𝑬"))
-    if is_admin(user_id): builder.row(types.KeyboardButton(text="⚙️ 𝑨𝑫𝑴𝑰𝑵 𝑷𝑨𝑵𝑬𝑳"))
+    builder.row(types.KeyboardButton(text="📞 𝑮𝑬𝑻 𝑵𝑼𝑴𝑩𝑬𝑹", style="success"), types.KeyboardButton(text="💰 𝑩𝑨𝑳𝑨𝑵𝑪𝑬", style="primary"))
+    if is_admin(user_id): builder.row(types.KeyboardButton(text="⚙️ 𝑨𝑫𝑴𝑰𝑵 𝑷𝑨𝑵𝑬𝑳", style="danger"))
     return builder.as_markup(resize_keyboard=True)
 
 def manual_services_keyboard():
     items = cursor.execute("SELECT DISTINCT service_name FROM manual_services WHERE stock > 0").fetchall()
     builder = InlineKeyboardBuilder()
     for (svc,) in items:
-        builder.row(types.InlineKeyboardButton(text=f"{svc}", callback_data=f"manual_svc_{svc}"))
-    if not items: builder.row(types.InlineKeyboardButton(text="🚫 No services available", callback_data="none"))
+        builder.row(types.InlineKeyboardButton(text=f"{svc}", callback_data=f"manual_svc_{svc}", style="primary"))
+    if not items: builder.row(types.InlineKeyboardButton(text="🚫 No services available", callback_data="none", style="danger"))
     return builder.as_markup()
 
 def admin_menu():
     builder = InlineKeyboardBuilder()
-    builder.button(text="📂 Manage Services", callback_data="manage_services")
-    builder.button(text="➕ Add Service", callback_data="add_service")
-    builder.button(text="👥 Manage Admins", callback_data="manage_admins")
-    builder.button(text="📢 Broadcast", callback_data="admin_bc")
-    builder.button(text="💰 Set OTP Rate", callback_data="set_earning_rate")
-    builder.button(text="⚙️ Set Min Withdraw", callback_data="set_min_withdraw")
-    builder.button(text="📋 Withdraw Requests", callback_data="view_withdraw_requests")
-    builder.button(text="💳 Add Balance", callback_data="add_balance_btn")
-    builder.button(text="🏆 Top 10 Users", callback_data="top_10_users")
-    builder.button(text="👥 Total Users", callback_data="total_users")
-    builder.button(text="➕ Add Manual Numbers", callback_data="add_manual_numbers")
-    builder.button(text="📋 Manage Manual Num.", callback_data="manage_manual_numbers")
+    builder.button(text="📂 Manage Services", callback_data="manage_services", style="primary")
+    builder.button(text="➕ Add Service", callback_data="add_service", style="success")
+    builder.button(text="👥 Manage Admins", callback_data="manage_admins", style="primary")
+    builder.button(text="📢 Broadcast", callback_data="admin_bc", style="primary")
+    builder.button(text="💰 Set OTP Rate", callback_data="set_earning_rate", style="success")
+    builder.button(text="⚙️ Set Min Withdraw", callback_data="set_min_withdraw", style="danger")
+    builder.button(text="📋 Withdraw Requests", callback_data="view_withdraw_requests", style="primary")
+    builder.button(text="💳 Add Balance", callback_data="add_balance_btn", style="success")
+    builder.button(text="🏆 Top 10 Users", callback_data="top_10_users", style="primary")
+    builder.button(text="👥 Total Users", callback_data="total_users", style="primary")
+    builder.button(text="➕ Add Manual Numbers", callback_data="add_manual_numbers", style="success")
+    builder.button(text="📋 Manage Manual Num.", callback_data="manage_manual_numbers", style="primary")
 
     current_w = "ON" if is_withdraw_enabled() else "OFF"
-    builder.button(text=f"💸 𝑾𝑰𝑻𝑯𝑫𝑹𝑨𝑾 [{current_w}]", callback_data="toggle_withdraw")
+    builder.button(text=f"💸 𝑾𝑰𝑻𝑯𝑫𝑹𝑨𝑾 [{current_w}]", callback_data="toggle_withdraw", style="danger")
     current_m = "ON" if is_maintenance_mode() else "OFF"
-    builder.button(text=f"🔧 Maintenance Mode [{current_m}]", callback_data="toggle_maintenance")
-    builder.button(text="🔙 Close", callback_data="close_admin_panel")
+    builder.button(text=f"🔧 Maintenance Mode [{current_m}]", callback_data="toggle_maintenance", style="danger")
+    builder.button(text="🔙 Close", callback_data="close_admin_panel", style="danger")
 
     builder.adjust(2)
     return builder.as_markup()
 
 def admin_management_menu():
     builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="➕ Add Admin", callback_data="add_admin_btn"))
-    builder.row(types.InlineKeyboardButton(text="❌ Remove Admin", callback_data="remove_admin_btn"))
-    builder.row(types.InlineKeyboardButton(text="📋 List Admins", callback_data="list_admins"))
-    builder.row(types.InlineKeyboardButton(text="🔙 Back", callback_data="admin_back"))
+    builder.row(types.InlineKeyboardButton(text="➕ Add Admin", callback_data="add_admin_btn", style="success"))
+    builder.row(types.InlineKeyboardButton(text="❌ Remove Admin", callback_data="remove_admin_btn", style="danger"))
+    builder.row(types.InlineKeyboardButton(text="📋 List Admins", callback_data="list_admins", style="primary"))
+    builder.row(types.InlineKeyboardButton(text="🔙 Back", callback_data="admin_back", style="danger"))
     return builder.as_markup()
 
 # ================= MAIN MENU HANDLERS =================
@@ -589,7 +596,7 @@ async def get_number_selection(message: types.Message, state: FSMContext):
     if await check_maintenance(message.from_user.id, message=message): return
     await message.answer("📂 Select a service:", reply_markup=manual_services_keyboard())
 
-@dp.message(F.text == "💰 𝑩𝑨𝑳𝑨টী")
+@dp.message(F.text == "💰 𝑩𝑨𝑳𝑨𝑵𝑪𝑬")
 async def show_balance(message: types.Message, state: FSMContext):
     await state.clear()
     if await check_maintenance(message.from_user.id, message=message): return
@@ -600,7 +607,7 @@ async def show_balance(message: types.Message, state: FSMContext):
 
     text = f"💰 *Your Wallet*\n\n🏦 Balance: ৳{bal}\n⬇️ Min withdraw: ৳{min_w}\n💵 Per Auto OTP: ৳{earn}"
     builder = InlineKeyboardBuilder()
-    if is_withdraw_enabled(): builder.row(types.InlineKeyboardButton(text="💸 𝑾𝑰𝑻𝑯𝑫𝑹𝑨𝑾", callback_data="withdraw_req"))
+    if is_withdraw_enabled(): builder.row(types.InlineKeyboardButton(text="💸 𝑾𝑰𝑻𝑯𝑫𝑹𝑨𝑾", callback_data="withdraw_req", style="danger"))
     await message.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
 
 @dp.message(F.text == "⚙️ 𝑨𝑫𝑴𝑰𝑵 𝑷𝑨𝑵𝑬𝑳")
@@ -727,7 +734,7 @@ async def show_top_10_users(callback: types.CallbackQuery):
             text += f"{rank} {fullname} {username} - `{row[2]} OTP`\n"
 
     builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="🔙 Back", callback_data="admin_back"))
+    builder.row(types.InlineKeyboardButton(text="🔙 Back", callback_data="admin_back", style="danger"))
     await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
     await callback.answer()
 
@@ -736,7 +743,7 @@ async def show_total_users(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id): return
     count = cursor.execute("SELECT COUNT(id) FROM users").fetchone()[0]
     builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="🔙 Back", callback_data="admin_back"))
+    builder.row(types.InlineKeyboardButton(text="🔙 Back", callback_data="admin_back", style="danger"))
     await callback.message.edit_text(f"👥 *Total Registered Users:* `{count}`", reply_markup=builder.as_markup(), parse_mode="Markdown")
     await callback.answer()
 
@@ -750,9 +757,9 @@ async def manage_services(callback: types.CallbackQuery):
         return
     builder = InlineKeyboardBuilder()
     for sid, name, flag, rval in rows:
-        builder.row(types.InlineKeyboardButton(text=f"🗑️ Delete: {flag} {name} [{rval}]", callback_data=f"del_srv_{sid}"))
-    builder.row(types.InlineKeyboardButton(text="➕ Add Service", callback_data="add_service"))
-    builder.row(types.InlineKeyboardButton(text="🔙 Back", callback_data="admin_back"))
+        builder.row(types.InlineKeyboardButton(text=f"🗑️ Delete: {flag} {name} [{rval}]", callback_data=f"del_srv_{sid}", style="danger"))
+    builder.row(types.InlineKeyboardButton(text="➕ Add Service", callback_data="add_service", style="success"))
+    builder.row(types.InlineKeyboardButton(text="🔙 Back", callback_data="admin_back", style="danger"))
     await callback.message.edit_text("📂 *Service List* (Click to delete):", reply_markup=builder.as_markup(), parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("del_srv_"))
@@ -814,7 +821,7 @@ async def list_admins(callback: types.CallbackQuery):
     rows = cursor.execute("SELECT user_id FROM admins").fetchall()
     text = "👥 *Current Admins:*\n\n" + "".join([f"• `{uid}`\n" for (uid,) in rows]) if rows else "No admins found."
     builder = InlineKeyboardBuilder()
-    builder.row(types.InlineKeyboardButton(text="🔙 Back", callback_data="manage_admins"))
+    builder.row(types.InlineKeyboardButton(text="🔙 Back", callback_data="manage_admins", style="danger"))
     await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
     await callback.answer()
 
@@ -886,7 +893,7 @@ async def view_wd(callback: types.CallbackQuery):
     rows = cursor.execute("SELECT id, user_id, amount, bkash_number, requested_at FROM withdraw_requests WHERE status='pending' ORDER BY requested_at DESC").fetchall()
     if not rows:
         builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(text="🔙 Back", callback_data="admin_back"))
+        builder.row(types.InlineKeyboardButton(text="🔙 Back", callback_data="admin_back", style="danger"))
         await callback.message.edit_text("📭 No pending withdraw requests.", reply_markup=builder.as_markup())
         return
     await callback.message.delete()
@@ -895,10 +902,10 @@ async def view_wd(callback: types.CallbackQuery):
         uname = uname_row[0] if uname_row and uname_row[0] else "N/A"
         text = f"📋 *Request #{rid}*\n👤 User ID: `{uid}` (@{uname})\n💰 Amount: `৳{amt}`\n📱 bKash: `{bkash}`\n🕒 Time: {tm}"
         builder = InlineKeyboardBuilder()
-        builder.row(types.InlineKeyboardButton(text="✅ Approve", callback_data=f"approve_wd_{rid}"), types.InlineKeyboardButton(text="❌ Reject", callback_data=f"reject_wd_{rid}"))
+        builder.row(types.InlineKeyboardButton(text="✅ Approve", callback_data=f"approve_wd_{rid}", style="success"), types.InlineKeyboardButton(text="❌ Reject", callback_data=f"reject_wd_{rid}", style="danger"))
         await callback.message.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
     back = InlineKeyboardBuilder()
-    back.row(types.InlineKeyboardButton(text="🔙 Back to Admin Panel", callback_data="admin_back"))
+    back.row(types.InlineKeyboardButton(text="🔙 Back to Admin Panel", callback_data="admin_back", style="danger"))
     await callback.message.answer("All pending requests listed above.", reply_markup=back.as_markup())
     await callback.answer()
 
@@ -950,7 +957,7 @@ async def admin_back(callback: types.CallbackQuery, state: FSMContext):
     if is_admin(callback.from_user.id):
         await state.clear()
         await callback.answer()
-        await callback.message.edit_text("⚙️ 𝑨𝑫𝑴𝑰𝑵 𝑷𝑨্নে𝑳", reply_markup=admin_menu(), parse_mode="Markdown")
+        await callback.message.edit_text("⚙️ 𝑨𝑫𝑴𝑰𝑵 𝑷𝑨𝑵𝑬𝑳", reply_markup=admin_menu(), parse_mode="Markdown")
 
 @dp.callback_query(F.data == "close_admin_panel")
 async def close_admin_panel(callback: types.CallbackQuery, state: FSMContext):
@@ -1082,8 +1089,8 @@ async def manual_cooldown_save(message: types.Message, state: FSMContext):
     
     text = f"✅ Added {len(numbers)} numbers to {svc} - {country} with {cooldown}s cooldown and ৳{rate} reward.\n\nDo you want to broadcast this to users?"
     builder = InlineKeyboardBuilder()
-    builder.button(text="📢 Broadcast", callback_data=f"m_bc_{svc_id}")
-    builder.button(text="❌ Close", callback_data="close_admin_panel")
+    builder.button(text="📢 Broadcast", callback_data=f"m_bc_{svc_id}", style="primary")
+    builder.button(text="❌ Close", callback_data="close_admin_panel", style="danger")
     
     await message.answer(text, reply_markup=builder.as_markup())
     await state.clear()
@@ -1127,8 +1134,8 @@ async def manage_manual_numbers(callback: types.CallbackQuery):
         return
     builder = InlineKeyboardBuilder()
     for svc_id, svc, country, stock in services:
-        builder.row(types.InlineKeyboardButton(text=f"🗑 {svc} - {country} ({stock} left)", callback_data=f"del_manual_{svc_id}"))
-    builder.row(types.InlineKeyboardButton(text="🔙 Back", callback_data="admin_back"))
+        builder.row(types.InlineKeyboardButton(text=f"🗑 {svc} - {country} ({stock} left)", callback_data=f"del_manual_{svc_id}", style="danger"))
+    builder.row(types.InlineKeyboardButton(text="🔙 Back", callback_data="admin_back", style="danger"))
     await callback.message.edit_text("📋 Manual services - click to delete:", reply_markup=builder.as_markup())
     await callback.answer()
 
@@ -1155,8 +1162,8 @@ async def manual_svc_selected(callback: types.CallbackQuery):
         return
     builder = InlineKeyboardBuilder()
     for svc_id, c_name, flag in countries:
-        builder.row(types.InlineKeyboardButton(text=f"{flag} {c_name}", callback_data=f"man_cntry_{svc_id}"))
-    builder.row(types.InlineKeyboardButton(text="🔙 Back", callback_data="manual_back"))
+        builder.row(types.InlineKeyboardButton(text=f"{flag} {c_name}", callback_data=f"man_cntry_{svc_id}", style="primary"))
+    builder.row(types.InlineKeyboardButton(text="🔙 Back", callback_data="manual_back", style="danger"))
     await callback.message.edit_text(f"🌍 Select country for *{svc_name}*:", reply_markup=builder.as_markup(), parse_mode="Markdown")
     await callback.answer()
 
@@ -1205,9 +1212,9 @@ async def manual_country_selected(callback: types.CallbackQuery):
             f"╔══════════════════════════╗\n║  ⏳ <i>Waiting for OTP...</i>  ║\n╚══════════════════════════╝{invisible_space}")
     
     builder = InlineKeyboardBuilder()
-    for num in nums: builder.row(types.InlineKeyboardButton(text=f"📄 {num}", copy_text=CopyTextButton(text=num)))
-    builder.row(types.InlineKeyboardButton(text="♻️ 𝑪𝑯𝑨𝑵𝑮𝑬 𝑵𝑼𝑴𝑩𝑬𝑹", callback_data=f"man_change_{svc_id}"), types.InlineKeyboardButton(text="🌍 𝑪𝑯𝑨𝑵𝑮𝑬 𝑪𝑶𝑼𝑵𝑻𝑹𝒀", callback_data=f"manual_svc_{svc_name}"))
-    builder.row(types.InlineKeyboardButton(text="💬 𝑶𝑻𝑷 𝑮𝑹𝑶𝑼𝑷", url=OTP_GROUP_LINK))
+    for num in nums: builder.row(types.InlineKeyboardButton(text=f"📄 {num}", copy_text=CopyTextButton(text=num), style="primary"))
+    builder.row(types.InlineKeyboardButton(text="♻️ 𝑪𝑯𝑨𝑵𝑮𝑬 𝑵𝑼𝑴𝑩𝑬𝑹", callback_data=f"man_change_{svc_id}", style="success"), types.InlineKeyboardButton(text="🌍 𝑪𝑯𝑨𝑵𝑮𝑬 𝑪𝑶𝑼𝑵𝑻𝑹𝒀", callback_data=f"manual_svc_{svc_name}", style="primary"))
+    builder.row(types.InlineKeyboardButton(text="💬 𝑶𝑻𝑷 𝑮𝑹𝑶𝑼𝑷", url=OTP_GROUP_LINK, style="primary"))
     
     try: await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
     except: await callback.message.answer(text, reply_markup=builder.as_markup(), parse_mode="HTML")
@@ -1288,9 +1295,9 @@ async def man_change_numbers(callback: types.CallbackQuery):
             f"╔══════════════════════════╗\n║  ⏳ <i>Waiting for OTP...</i>  ║\n╚══════════════════════════╝{invisible_space}")
     
     builder = InlineKeyboardBuilder()
-    for num in new_nums: builder.row(types.InlineKeyboardButton(text=f"📄 {num}", copy_text=CopyTextButton(text=num)))
-    builder.row(types.InlineKeyboardButton(text="♻️ 𝑪𝑯𝑨𝑵𝑮𝑬 𝑵𝑼𝑴𝑩𝑬𝑹", callback_data=f"man_change_{svc_id}"), types.InlineKeyboardButton(text="🌍 𝑪𝑯𝑨𝑵𝑮𝑬 𝑪𝑶𝑼𝑵𝑻𝑹𝒀", callback_data=f"manual_svc_{svc_name}"))
-    builder.row(types.InlineKeyboardButton(text="💬 𝑶𝑻𝑷 𝑮𝑹𝑶𝑼𝑷", url=OTP_GROUP_LINK))
+    for num in new_nums: builder.row(types.InlineKeyboardButton(text=f"📄 {num}", copy_text=CopyTextButton(text=num), style="primary"))
+    builder.row(types.InlineKeyboardButton(text="♻️ 𝑪𝑯𝑨𝑵𝑮𝑬 𝑵𝑼𝑴𝑩𝑬𝑹", callback_data=f"man_change_{svc_id}", style="success"), types.InlineKeyboardButton(text="🌍 𝑪𝑯𝑨𝑵𝑮𝑬 𝑪𝑶𝑼𝑵𝑻𝑹𝒀", callback_data=f"manual_svc_{svc_name}", style="primary"))
+    builder.row(types.InlineKeyboardButton(text="💬 𝑶𝑻𝑷 𝑮𝑹𝑶𝑼𝑷", url=OTP_GROUP_LINK, style="primary"))
     
     try: 
         await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
@@ -1335,13 +1342,20 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     else:
         target_message = await callback_or_msg.answer(f"⏳ *Fetching numbers for `{range_val}`...*", parse_mode="Markdown")
 
-    numbers = await fetch_numbers_by_range(range_val, limit=limit)
+    # আপনার দেওয়া হুবহু অরিজিনাল লুপ ফেচিং (যাতে API ব্লক না হয়)
+    numbers = []
+    for _ in range(limit):
+        res = await fetch_one_number(range_val)
+        if res and res not in numbers:
+            numbers.append(res)
+        await asyncio.sleep(0.5)
 
     if not numbers:
         try: await target_message.edit_text(f"❌ Could not fetch numbers for `{range_val}`. Try again.", parse_mode="Markdown")
         except: pass
         return None
 
+    # Tuple হিসেবে রিটার্ন হওয়ার কারণে index [0][1] নিতে হবে
     if row: name, flag, country_code = row
     else: country_code, flag = get_country_from_phone(numbers[0][1])
 
@@ -1360,12 +1374,14 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     text = f"{flag} *{country_name}*➔`[{range_val}]`👀\n━━━━━━━━━━━━━━━━━━━━━━━\n⏳ *Waiting for OTP....*{invisible_space}"
     
     builder = InlineKeyboardBuilder()
+    
+    # Tuple Unpacking করা হয়েছে যাতে ক্র্যাশ না হয়
     for idx, (nid, phone) in enumerate(numbers, 1):
-        builder.row(types.InlineKeyboardButton(text=f" {format_number_with_flag(phone)}", copy_text=CopyTextButton(text=phone)))
+        builder.row(types.InlineKeyboardButton(text=f" {format_number_with_flag(phone)}", copy_text=CopyTextButton(text=phone), style="primary"))
 
     builder.row(
-        types.InlineKeyboardButton(text="♻️ 𝑪𝑯𝑨𝑵𝑮𝑬", callback_data=f"chg_range_{range_val}_{limit}"),
-        types.InlineKeyboardButton(text="💬 𝑮𝑬𝑻 𝑶𝑻𝑷", url=OTP_GROUP_LINK)
+        types.InlineKeyboardButton(text="♻️ 𝑪𝑯𝑨্নে", callback_data=f"chg_range_{range_val}_{limit}", style="success"),
+        types.InlineKeyboardButton(text="💬 𝑮𝑬𝑻 𝑶𝑻𝑷", url=OTP_GROUP_LINK, style="primary")
     )
 
     try: 
@@ -1382,8 +1398,7 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
         try: await callback_or_msg.delete() 
         except: pass
 
-    phones_list = [p[1] for p in numbers]
-    asyncio.create_task(poll_for_otp(sent.chat.id, phones_list, duration_sec=300, is_manual=False))
+    asyncio.create_task(poll_for_otp(sent.chat.id, [p[1] for p in numbers], duration_sec=300, is_manual=False))
     return sent
 
 @dp.callback_query(F.data.startswith("chg_range_"))
