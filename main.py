@@ -290,7 +290,7 @@ async def fetch_api_data(session, url, headers=None, params=None):
     return None
 
 
-# ================= নতুন ও একদম ঠিকমতো কাজ করা নাম্বার ফেচিং লজিক =================
+# ================= ফিক্সড রেঞ্জ নাম্বার ফেচিং লজিক (আপনার দেওয়া কোড অনুযায়ী) =================
 async def fetch_one_number(range_val: str, attempt: int = 0):
     url = f"{API_BASE_URL}/mapi/v1/public/getnum/number"
     headers = {"mapikey": API_KEY, "Content-Type": "application/json"}
@@ -305,7 +305,7 @@ async def fetch_one_number(range_val: str, attempt: int = 0):
                     num = num_data.get('full_number') or num_data.get('number') or num_data.get('phone')
                     if num:
                         return (str(num), str(num))
-            elif resp.status == 405: # Fallback to GET method if POST is not allowed
+            elif resp.status == 405: 
                 async with session.get(url, params=payload, headers={"mapikey": API_KEY}, timeout=15, ssl=False) as resp_get:
                     if resp_get.status == 200:
                         data = await resp_get.json()
@@ -324,13 +324,13 @@ async def fetch_one_number(range_val: str, attempt: int = 0):
     return None
 
 async def fetch_numbers_by_range(range_val: str, limit: int = 2):
-    tasks = [fetch_one_number(range_val) for _ in range(limit)]
-    results = await asyncio.gather(*tasks)
-    unique_results = []
-    for r in results:
-        if r is not None and r not in unique_results:
-            unique_results.append(r)
-    return unique_results
+    results = []
+    for _ in range(limit):
+        res = await fetch_one_number(range_val)
+        if res and res not in results:
+            results.append(res)
+        await asyncio.sleep(0.5) 
+    return results
 # ==============================================================================
 
 # ================= BACKGROUND TASKS (MASTER OTP FETCHER) =================
@@ -1344,7 +1344,12 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     else:
         target_message = await callback_or_msg.answer(f"⏳ *Fetching numbers for `{range_val}`...*", parse_mode="Markdown")
 
-    numbers = await fetch_numbers_by_range(range_val, limit=limit)
+    numbers = []
+    for _ in range(limit):
+        res = await fetch_one_number(range_val)
+        if res and res not in numbers:
+            numbers.append(res)
+        await asyncio.sleep(0.5)
 
     if not numbers:
         try: await target_message.edit_text(f"❌ Could not fetch numbers for `{range_val}`. Try again.", parse_mode="Markdown")
