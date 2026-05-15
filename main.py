@@ -177,7 +177,7 @@ COUNTRY_PREFIXES = {
 }
 
 def get_country_from_phone(phone: str) -> tuple:
-    digits = ''.join(filter(str.isdigit, phone))
+    digits = ''.join(filter(str.isdigit, str(phone)))
     if not digits: return "GLOBAL", "🌍"
     for length in range(5, 0, -1):
         if digits[:length] in COUNTRY_PREFIXES:
@@ -223,7 +223,6 @@ def extract_otp(message):
     if not message: return None
     message_str = str(message).strip().upper()
     
-    # জিরো বা ভুল ডাটা ফিল্টার
     if message_str in ["0", "00", "000", "0000", "000000", "NULL", "NONE", "WAITING", "PENDING", ""]:
         return None
     
@@ -291,7 +290,7 @@ async def fetch_api_data(session, url, headers=None, params=None):
     return None
 
 
-# ================= অরিজিনাল নাম্বার ফেচিং লজিক (১০০% কাজ করে) =================
+# ================= অরিজিনাল রেঞ্জ নাম্বার ফেচিং লজিক (১০০% পারফেক্ট) =================
 def parse_number_data(data):
     if not data: return None
     num = None
@@ -307,48 +306,42 @@ def parse_number_data(data):
     
     if num:
         num_str = str(num).replace(' ', '').replace('+', '')
-        return (num_str, num_str) # আপনার অরিজিনাল Tuple ফরম্যাট
+        return (num_str, num_str) # Tuple format
     return None
 
 async def fetch_one_number(range_val: str, attempt: int = 0):
     url = f"{API_BASE_URL}/mapi/v1/public/getnum/number"
-    headers = {"mapikey": API_KEY, "Content-Type": "application/json"}
-    payload = {"range": range_val}
+    headers = {"mapikey": API_KEY, "Accept": "application/json"} # Using your original headers
+    payload = {"range": str(range_val).strip()}
+    
     try:
         session = await get_session()
+        async with session.get(url, params=payload, headers=headers, timeout=15, ssl=False) as resp:
+            if resp.status == 200:
+                res = parse_number_data(await resp.json())
+                if res: return res
+                
         async with session.post(url, json=payload, headers=headers, timeout=15, ssl=False) as resp:
             if resp.status == 200:
-                data = await resp.json()
-                res = parse_number_data(data)
+                res = parse_number_data(await resp.json())
                 if res: return res
-            elif resp.status == 405: 
-                async with session.get(url, params=payload, headers={"mapikey": API_KEY}, timeout=15, ssl=False) as resp_get:
-                    if resp_get.status == 200:
-                        data = await resp_get.json()
-                        res = parse_number_data(data)
-                        if res: return res
-        if attempt < 2:
-            await asyncio.sleep(2)
-            return await fetch_one_number(range_val, attempt=attempt+1)
-    except Exception as e:
-        if attempt < 2:
-            await asyncio.sleep(2)
-            return await fetch_one_number(range_val, attempt=attempt+1)
+    except Exception: pass
+        
+    if attempt < 2:
+        await asyncio.sleep(1.0)
+        return await fetch_one_number(range_val, attempt=attempt+1)
     return None
 
 async def fetch_numbers_by_range(range_val: str, limit: int = 2):
-    # Concurrent Fetching
-    tasks = [fetch_one_number(range_val) for _ in range(limit)]
-    results = await asyncio.gather(*tasks)
-    
-    # Nones রিমুভ করে ইউনিক লিস্ট বানানো হচ্ছে
-    unique_numbers = []
-    for res in results:
-        if res and res not in unique_numbers:
-            unique_numbers.append(res)
-    return unique_numbers
+    # Your original working sequential loop logic
+    results = []
+    for _ in range(limit):
+        res = await fetch_one_number(range_val)
+        if res and res not in results:
+            results.append(res)
+        await asyncio.sleep(0.5) 
+    return results
 # ==============================================================================
-
 
 # ================= BACKGROUND TASKS (MASTER OTP FETCHER) =================
 async def master_otp_fetcher():
@@ -1330,6 +1323,9 @@ async def auto_detect_range(message: types.Message, state: FSMContext):
 
     match = RANGE_PATTERN.search(text_to_check)
     if match:
+        try: await message.delete() 
+        except: pass
+        
         range_val = match.group(1).upper().replace('X', 'X')
         if range_val.startswith('+'): range_val = range_val[1:]
         
@@ -1347,19 +1343,20 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     else:
         target_message = await callback_or_msg.answer(f"⏳ *Fetching numbers for `{range_val}`...*", parse_mode="Markdown")
 
-    tasks = [fetch_one_number(range_val) for _ in range(limit)]
-    results = await asyncio.gather(*tasks)
-    
+    # আপনার দেওয়া হুবহু অরিজিনাল লুপ ফেচিং (যাতে API ব্লক না হয়)
     numbers = []
-    for res in results:
+    for _ in range(limit):
+        res = await fetch_one_number(range_val)
         if res and res not in numbers:
             numbers.append(res)
+        await asyncio.sleep(0.5)
 
     if not numbers:
         try: await target_message.edit_text(f"❌ Could not fetch numbers for `{range_val}`. Try again.", parse_mode="Markdown")
         except: pass
         return None
 
+    # Tuple হিসেবে রিটার্ন হওয়ার কারণে index [0][1] নিতে হবে
     if row: name, flag, country_code = row
     else: country_code, flag = get_country_from_phone(numbers[0][1])
 
@@ -1378,6 +1375,8 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     text = f"{flag} *{country_name}*➔`[{range_val}]`👀\n━━━━━━━━━━━━━━━━━━━━━━━\n⏳ *Waiting for OTP....*{invisible_space}"
     
     builder = InlineKeyboardBuilder()
+    
+    # Tuple Unpacking করা হয়েছে যাতে ক্র্যাশ না হয়
     for idx, (nid, phone) in enumerate(numbers, 1):
         builder.row(types.InlineKeyboardButton(text=f" {format_number_with_flag(phone)}", copy_text=CopyTextButton(text=phone)))
 
@@ -1400,13 +1399,12 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
         try: await callback_or_msg.delete() 
         except: pass
 
-    phones_list = [p[1] for p in numbers]
-    asyncio.create_task(poll_for_otp(sent.chat.id, phones_list, duration_sec=300, is_manual=False))
+    asyncio.create_task(poll_for_otp(sent.chat.id, [p[1] for p in numbers], duration_sec=300, is_manual=False))
     return sent
 
 @dp.callback_query(F.data.startswith("chg_range_"))
 async def change_range_number_panel(callback: types.CallbackQuery):
-    if await check_maintenance(callback.fromuser.id, callback=callback): return
+    if await check_maintenance(callback.from_user.id, callback=callback): return
     parts = callback.data.split("_")
     await send_range_numbers_message(callback, parts[2], limit=int(parts[3]))
 
