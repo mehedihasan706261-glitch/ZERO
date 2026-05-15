@@ -1415,10 +1415,28 @@ async def on_shutdown():
 
 dp.shutdown.register(on_shutdown)
 
+# ================= AUTO RESTART BROADCAST =================
+async def auto_restart_broadcast():
+    await asyncio.sleep(5) # স্ক্রিপ্ট রান হওয়ার ৫ সেকেন্ড পর মেসেজ পাঠানো শুরু করবে
+    print("🔄 সবার কাছে অটো রিস্টার্ট/রিফ্রেশ মেসেজ পাঠানো শুরু হচ্ছে...")
+    users = cursor.execute("SELECT id FROM users").fetchall()
+    success = 0
+    for (uid,) in users:
+        try:
+            text = "🔄 **সিস্টেম আপডেট/রিস্টার্ট সম্পন্ন হয়েছে!** 🚀\nআপনার বটের কানেকশন রিফ্রেশ করা হয়েছে। নিচের মেনুগুলো ব্যবহার করুন 👇"
+            await bot.send_message(uid[0], text, reply_markup=main_menu(uid[0]), parse_mode="Markdown")
+            success += 1
+            await asyncio.sleep(0.05) # টেলিগ্রামের API যাতে ব্লক না করে তাই ০.০৫ সেকেন্ড গ্যাপ
+        except Exception:
+            pass # যদি কোনো ইউজার বট ব্লক করে থাকে, তাহলে এরর না দিয়ে ইগনোর করবে
+    print(f"✅ সফলভাবে {success} জন ইউজারকে অটো রিস্টার্ট রিফ্রেশ পাঠানো হয়েছে!")
+
 # ================= STARTUP =================
 async def on_startup():
     asyncio.create_task(master_otp_fetcher())
     asyncio.create_task(process_manual_expiry())
+    # স্ক্রিপ্ট রান হলেই অটোমেটিক সবার কাছে রিফ্রেশ মেসেজ যাওয়ার টাস্ক
+    asyncio.create_task(auto_restart_broadcast())
 
 dp.startup.register(on_startup)
 
