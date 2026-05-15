@@ -290,56 +290,47 @@ async def fetch_api_data(session, url, headers=None, params=None):
     return None
 
 
-# ================= অরিজিনাল রেঞ্জ নাম্বার ফেচিং লজিক (১০০% পারফেক্ট) =================
-def parse_number_data(data):
-    if not data: return None
-    num = None
-    if isinstance(data, dict):
-        inner = data.get('data', data)
-        if isinstance(inner, list) and len(inner) > 0:
-            inner = inner[0]
-        if isinstance(inner, dict):
-            num = inner.get('full_number') or inner.get('number') or inner.get('phone') or inner.get('number_raw')
-    elif isinstance(data, list) and len(data) > 0:
-        if isinstance(data[0], dict):
-            num = data[0].get('full_number') or data[0].get('number') or data[0].get('phone') or data[0].get('number_raw')
-    
-    if num:
-        num_str = str(num).replace(' ', '').replace('+', '')
-        return (num_str, num_str) # Tuple format
-    return None
-
+# ================= নতুন ও একদম ঠিকমতো কাজ করা নাম্বার ফেচিং লজিক =================
 async def fetch_one_number(range_val: str, attempt: int = 0):
     url = f"{API_BASE_URL}/mapi/v1/public/getnum/number"
-    headers = {"mapikey": API_KEY, "Accept": "application/json"} 
-    payload = {"range": str(range_val).strip()}
-    
+    headers = {"mapikey": API_KEY, "Content-Type": "application/json"}
+    payload = {"range": range_val}
     try:
         session = await get_session()
-        async with session.get(url, params=payload, headers=headers, timeout=15, ssl=False) as resp:
-            if resp.status == 200:
-                res = parse_number_data(await resp.json())
-                if res: return res
-                
         async with session.post(url, json=payload, headers=headers, timeout=15, ssl=False) as resp:
             if resp.status == 200:
-                res = parse_number_data(await resp.json())
-                if res: return res
-    except Exception: pass
-        
-    if attempt < 2:
-        await asyncio.sleep(1.0)
-        return await fetch_one_number(range_val, attempt=attempt+1)
+                data = await resp.json()
+                if isinstance(data, dict):
+                    num_data = data.get('data', {}) if 'data' in data else data
+                    num = num_data.get('full_number') or num_data.get('number') or num_data.get('phone')
+                    if num:
+                        return (str(num), str(num))
+            elif resp.status == 405: # Fallback to GET method if POST is not allowed
+                async with session.get(url, params=payload, headers={"mapikey": API_KEY}, timeout=15, ssl=False) as resp_get:
+                    if resp_get.status == 200:
+                        data = await resp_get.json()
+                        if isinstance(data, dict):
+                            num_data = data.get('data', {}) if 'data' in data else data
+                            num = num_data.get('full_number') or num_data.get('number') or num_data.get('phone')
+                            if num:
+                                return (str(num), str(num))
+        if attempt < 2:
+            await asyncio.sleep(2)
+            return await fetch_one_number(range_val, attempt=attempt+1)
+    except Exception as e:
+        if attempt < 2:
+            await asyncio.sleep(2)
+            return await fetch_one_number(range_val, attempt=attempt+1)
     return None
 
 async def fetch_numbers_by_range(range_val: str, limit: int = 2):
-    results = []
-    for _ in range(limit):
-        res = await fetch_one_number(range_val)
-        if res and res not in results:
-            results.append(res)
-        await asyncio.sleep(0.5) 
-    return results
+    tasks = [fetch_one_number(range_val) for _ in range(limit)]
+    results = await asyncio.gather(*tasks)
+    unique_results = []
+    for r in results:
+        if r is not None and r not in unique_results:
+            unique_results.append(r)
+    return unique_results
 # ==============================================================================
 
 # ================= BACKGROUND TASKS (MASTER OTP FETCHER) =================
@@ -1310,23 +1301,34 @@ async def man_change_numbers(callback: types.CallbackQuery):
     asyncio.create_task(poll_for_otp(uid, new_nums, duration_sec=1200, is_manual=True))
 
 # ================= AUTO RANGE DETECTION =================
-RANGE_PATTERN = re.compile(r'[\+]?(\d{3,12}[Xx]{2,6})')
+RANGE_PATTERN = re.compile(r'(?i)[\+]?(\d{2,15}[Xx]{0,15})')
+
+def extract_range_from_text(text: str) -> str:
+    clean_text = text.replace(" ", "").replace("-", "") 
+    match = RANGE_PATTERN.search(clean_text)
+    if match:
+        range_val = match.group(1).upper()
+        if range_val.startswith('+'):
+            range_val = range_val[1:]
+        return range_val
+    return None
 
 @dp.message()
 async def auto_detect_range(message: types.Message, state: FSMContext):
+    current_state = await state.get_state()
+    if current_state is not None:
+        return
+        
     if message.text and message.text.startswith('/'): return
     if message.text in ["📞 𝑮𝑬𝑻 𝑵𝑼𝑴𝑩𝑬𝑹", "💰 𝑩𝑨𝑳𝑨𝑵𝑪𝑬", "⚙️ 𝑨𝑫𝑴𝑰𝑵 𝑷𝑨𝑵𝑬𝑳"]: return
     
     text_to_check = message.text or message.caption or ""
     if not text_to_check or await check_maintenance(message.from_user.id, message=message): return
 
-    match = RANGE_PATTERN.search(text_to_check)
-    if match:
+    range_val = extract_range_from_text(text_to_check)
+    if range_val:
         try: await message.delete() 
         except: pass
-        
-        range_val = match.group(1).upper().replace('X', 'X')
-        if range_val.startswith('+'): range_val = range_val[1:]
         
         await send_range_numbers_message(message, range_val)
 
@@ -1342,20 +1344,13 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     else:
         target_message = await callback_or_msg.answer(f"⏳ *Fetching numbers for `{range_val}`...*", parse_mode="Markdown")
 
-    # আপনার দেওয়া হুবহু অরিজিনাল লুপ ফেচিং (যাতে API ব্লক না হয়)
-    numbers = []
-    for _ in range(limit):
-        res = await fetch_one_number(range_val)
-        if res and res not in numbers:
-            numbers.append(res)
-        await asyncio.sleep(0.5)
+    numbers = await fetch_numbers_by_range(range_val, limit=limit)
 
     if not numbers:
         try: await target_message.edit_text(f"❌ Could not fetch numbers for `{range_val}`. Try again.", parse_mode="Markdown")
         except: pass
         return None
 
-    # Tuple হিসেবে রিটার্ন হওয়ার কারণে index [0][1] নিতে হবে
     if row: name, flag, country_code = row
     else: country_code, flag = get_country_from_phone(numbers[0][1])
 
@@ -1375,12 +1370,11 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     
     builder = InlineKeyboardBuilder()
     
-    # Tuple Unpacking করা হয়েছে যাতে ক্র্যাশ না হয়
     for idx, (nid, phone) in enumerate(numbers, 1):
         builder.row(types.InlineKeyboardButton(text=f" {format_number_with_flag(phone)}", copy_text=CopyTextButton(text=phone), style="primary"))
 
     builder.row(
-        types.InlineKeyboardButton(text="♻️ 𝑪𝑯𝑨্নে", callback_data=f"chg_range_{range_val}_{limit}", style="success"),
+        types.InlineKeyboardButton(text="♻️ 𝑪𝑯𝑨𝑵𝑮𝑬", callback_data=f"chg_range_{range_val}_{limit}", style="success"),
         types.InlineKeyboardButton(text="💬 𝑮𝑬𝑻 𝑶𝑻𝑷", url=OTP_GROUP_LINK, style="primary")
     )
 
@@ -1427,4 +1421,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
