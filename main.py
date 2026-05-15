@@ -266,7 +266,7 @@ class WithdrawState(StatesGroup):
     waiting_number = State()
     waiting_amount = State()
 
-# ================= API DATA FETCHING (MASTER FETCHER) =================
+# ================= API DATA FETCHING =================
 http_session = None
 async def get_session():
     global http_session
@@ -296,8 +296,7 @@ def parse_number_data(data):
             num = data[0].get('full_number') or data[0].get('number') or data[0].get('phone') or data[0].get('number_raw')
     
     if num:
-        num_str = str(num).replace(' ', '').replace('+', '')
-        return (num_str, num_str)
+        return str(num).replace(' ', '').replace('+', '')
     return None
 
 async def fetch_one_number(range_val: str, attempt: int = 0):
@@ -319,19 +318,9 @@ async def fetch_one_number(range_val: str, attempt: int = 0):
     except Exception: pass
         
     if attempt < 2:
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(1.0) 
         return await fetch_one_number(range_val, attempt=attempt+1)
     return None
-
-# Sequential Fetching for Range Numbers
-async def fetch_numbers_by_range(range_val: str, limit: int = 2):
-    results = []
-    for _ in range(limit):
-        res = await fetch_one_number(range_val)
-        if res and res not in results:
-            results.append(res)
-        await asyncio.sleep(0.5) 
-    return results
 
 # ================= BACKGROUND TASKS (MASTER OTP FETCHER) =================
 async def master_otp_fetcher():
@@ -1198,7 +1187,6 @@ async def manual_country_selected(callback: types.CallbackQuery):
     cursor.execute("UPDATE users SET active_manual=?, manual_cooldowns=? WHERE id=?", (active_data, json.dumps(user_cds), uid))
     db.commit()
     
-    # ❌ Updated Time রিমুভ করা হয়েছে
     text = (f"🌐 <b>Country:</b> {flag} {c_name}\n💸 <b>Reward:</b> +৳{otp_rate} (Per OTP)\n━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"╔══════════════════════════╗\n║  ⏳ <i>Waiting for OTP...</i>  ║\n╚══════════════════════════╝")
     
@@ -1281,7 +1269,6 @@ async def man_change_numbers(callback: types.CallbackQuery):
     cursor.execute("UPDATE users SET active_manual=?, manual_cooldowns=? WHERE id=?", (json.dumps(active), json.dumps(user_cds), uid))
     db.commit()
     
-    # ❌ Updated Time রিমুভ করা হয়েছে
     text = (f"🌐 <b>Country:</b> {flag} {c_name}\n💸 <b>Reward:</b> +৳{otp_rate} (Per OTP)\n━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"╔══════════════════════════╗\n║  ⏳ <i>Waiting for OTP...</i>  ║\n╚══════════════════════════╝")
     
@@ -1334,11 +1321,12 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
         target_message = await callback_or_msg.answer(f"⏳ *Fetching numbers for `{range_val}`...*", parse_mode="Markdown")
 
     numbers = []
+    # এখানে আবার অরিজিনাল সিকুয়েনশিয়াল লজিকটা ব্যবহার করা হয়েছে, যেনো API ব্লক না করে।
     for _ in range(limit):
         res = await fetch_one_number(range_val)
         if res and res not in numbers:
             numbers.append(res)
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(1.0) 
 
     if not numbers:
         try: await target_message.edit_text(f"❌ Could not fetch numbers for `{range_val}`. Try again.", parse_mode="Markdown")
@@ -1351,7 +1339,6 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     country_map = {"BD": "Bangladesh", "US": "United States", "IN": "India"}
     country_name = country_map.get(country_code, country_code)
 
-    # ❌ Updated Time রিমুভ করা হয়েছে
     text = f"{flag} *{country_name}*➔`[{range_val}]`👀\n━━━━━━━━━━━━━━━━━━━━━━━\n⏳ *Waiting for OTP....*"
     
     builder = InlineKeyboardBuilder()
@@ -1373,7 +1360,7 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
         else:
             sent = await callback_or_msg.answer(text, reply_markup=builder.as_markup(), parse_mode="Markdown")
 
-    asyncio.create_task(poll_for_otp(sent.chat.id, [p[1] for p in numbers], duration_sec=300, is_manual=False))
+    asyncio.create_task(poll_for_otp(sent.chat.id, [p for p in numbers], duration_sec=300, is_manual=False))
     return sent
 
 @dp.callback_query(F.data.startswith("chg_range_"))
