@@ -17,7 +17,6 @@ import random
 
 # ================= CONFIGURATION =================
 TOKEN = "8647348457:AAEi5Kre2Df4Xeig80aZzsd_7zR9MFO739Y"
-# TELEGRAM_CHAT_ID = "-1003860008126" # (গ্রুপে ওটিপি পাঠানো বন্ধ করা হয়েছে, তাই এটি আর ব্যবহার হবে না)
 
 # --- Panel 1 (MNIT Network Only) ---
 API_BASE_URL = "https://x.mnitnetwork.com"
@@ -76,6 +75,14 @@ cursor.execute("""CREATE TABLE IF NOT EXISTS withdraw_requests (
     bkash_number TEXT,
     status TEXT DEFAULT 'pending',
     requested_at TEXT
+)""")
+cursor.execute("""CREATE TABLE IF NOT EXISTS used_numbers (
+    user_id INTEGER,
+    number_id TEXT,
+    phone_number TEXT,
+    service_id INTEGER,
+    used_at TEXT,
+    PRIMARY KEY (user_id, number_id)
 )""")
 cursor.execute("CREATE TABLE IF NOT EXISTS admins (user_id TEXT PRIMARY KEY)")
 cursor.execute("""CREATE TABLE IF NOT EXISTS otp_success_logs (
@@ -170,12 +177,17 @@ COUNTRY_PREFIXES = {
 }
 
 def get_country_from_phone(phone: str) -> tuple:
-    digits = ''.join(filter(str.isdigit, str(phone)))
-    if not digits: return "GLOBAL", "🌍"
+    digits = ''.join(filter(str.isdigit, phone))
+    if not digits: return "BD", "🇧🇩"
     for length in range(5, 0, -1):
-        if digits[:length] in COUNTRY_PREFIXES:
-            return COUNTRY_PREFIXES[digits[:length]]
-    return "GLOBAL", "🌍"
+        prefix = digits[:length]
+        if prefix in COUNTRY_PREFIXES:
+            return COUNTRY_PREFIXES[prefix]
+    for length in range(3, 0, -1):
+        prefix = digits[:length]
+        if prefix in COUNTRY_PREFIXES:
+            return COUNTRY_PREFIXES[prefix]
+    return "BD", "🇧🇩"
 
 def format_number_with_flag(phone: str) -> str:
     _, flag = get_country_from_phone(phone)
@@ -190,11 +202,13 @@ def get_flag_emoji(country_code: str) -> str:
     return chr(ord('🇦') + (ord(country_code[0].upper()) - ord('A'))) + chr(ord('🇦') + (ord(country_code[1].upper()) - ord('A')))
 
 def is_maintenance_mode() -> bool:
-    row = cursor.execute("SELECT value FROM config WHERE key='maintenance_mode'").fetchone()
+    cursor.execute("SELECT value FROM config WHERE key='maintenance_mode'")
+    row = cursor.fetchone()
     return row and row[0] == 'on'
 
 def is_withdraw_enabled() -> bool:
-    row = cursor.execute("SELECT value FROM config WHERE key='withdraw_enabled'").fetchone()
+    cursor.execute("SELECT value FROM config WHERE key='withdraw_enabled'")
+    row = cursor.fetchone()
     return row and row[0] == 'on'
 
 async def check_maintenance(user_id: int, message: types.Message = None, callback: types.CallbackQuery = None):
@@ -216,7 +230,6 @@ def extract_otp(message):
     if not message: return None
     message_str = str(message).strip().upper()
     
-    # === API থেকে 0, NULL বা PENDING আসলে রিজেক্ট করবে ===
     if message_str in ["0", "00", "000", "0000", "000000", "NULL", "NONE", "WAITING", "PENDING", ""]:
         return None
     
@@ -244,12 +257,6 @@ def extract_otp(message):
                 return match[:8]
     return None
 
-def generate_skypro_number(phone: str) -> str:
-    digits = re.sub(r'\D', '', str(phone))
-    if len(digits) >= 6: return f"{digits[:3]}SKYPRO{digits[-3:]}"
-    elif len(digits) > 3: return f"{digits[:3]}SKYPRO"
-    return f"SKYPRO{digits}"
-
 # ================= FSM STATES =================
 class AdminStates(StatesGroup):
     waiting_service_name = State()
@@ -273,9 +280,6 @@ class WithdrawState(StatesGroup):
     waiting_number = State()
     waiting_amount = State()
 
-class CustomRangeState(StatesGroup):
-    waiting_range_value = State()
-
 # ================= API DATA FETCHING (MASTER FETCHER) =================
 http_session = None
 async def get_session():
@@ -292,46 +296,44 @@ async def fetch_api_data(session, url, headers=None, params=None):
     except Exception: pass
     return None
 
-def parse_number_data(data):
-    if not data: return None
-    num = None
-    if isinstance(data, dict):
-        inner = data.get('data', data)
-        if isinstance(inner, list) and len(inner) > 0:
-            inner = inner[0]
-        if isinstance(inner, dict):
-            num = inner.get('full_number') or inner.get('number') or inner.get('phone') or inner.get('number_raw')
-    elif isinstance(data, list) and len(data) > 0:
-        if isinstance(data[0], dict):
-            num = data[0].get('full_number') or data[0].get('number') or data[0].get('phone') or data[0].get('number_raw')
-    
-    if num:
-        num_str = str(num).replace(' ', '').replace('+', '')
-        return (num_str, num_str)
-    return None
-
+# ================= আপনার দেওয়া অরিজিনাল নাম্বার ফেচিং লজিক =================
 async def fetch_one_number(range_val: str, attempt: int = 0):
     url = f"{API_BASE_URL}/mapi/v1/public/getnum/number"
-    headers = {"mapikey": API_KEY, "Accept": "application/json"}
-    payload = {"range": str(range_val).strip()}
-    
+    headers = {"mapikey": API_KEY, "Content-Type": "application/json"}
+    payload = {"range": range_val}
     try:
         session = await get_session()
-        async with session.get(url, params=payload, headers=headers, timeout=15, ssl=False) as resp:
-            if resp.status == 200:
-                res = parse_number_data(await resp.json())
-                if res: return res
-                
         async with session.post(url, json=payload, headers=headers, timeout=15, ssl=False) as resp:
             if resp.status == 200:
-                res = parse_number_data(await resp.json())
-                if res: return res
-    except Exception: pass
-        
-    if attempt < 2:
-        await asyncio.sleep(1.0)
-        return await fetch_one_number(range_val, attempt=attempt+1)
+                data = await resp.json()
+                if isinstance(data, dict):
+                    num_data = data.get('data', {}) if 'data' in data else data
+                    num = num_data.get('full_number') or num_data.get('number') or num_data.get('phone')
+                    if num:
+                        return str(num)
+            elif resp.status == 405: # Fallback to GET method if POST is not allowed
+                async with session.get(url, params=payload, headers={"mapikey": API_KEY}, timeout=15, ssl=False) as resp_get:
+                    if resp_get.status == 200:
+                        data = await resp_get.json()
+                        if isinstance(data, dict):
+                            num_data = data.get('data', {}) if 'data' in data else data
+                            num = num_data.get('full_number') or num_data.get('number') or num_data.get('phone')
+                            if num:
+                                return str(num)
+        if attempt < 2:
+            await asyncio.sleep(2)
+            return await fetch_one_number(range_val, attempt=attempt+1)
+    except Exception as e:
+        if attempt < 2:
+            await asyncio.sleep(2)
+            return await fetch_one_number(range_val, attempt=attempt+1)
     return None
+
+async def fetch_numbers_by_range(range_val: str, limit: int = 2):
+    tasks = [fetch_one_number(range_val) for _ in range(limit)]
+    results = await asyncio.gather(*tasks)
+    # Remove duplicates and Nones
+    return list(set([res for res in results if res is not None]))
 
 # ================= BACKGROUND TASKS (MASTER OTP FETCHER) =================
 async def master_otp_fetcher():
@@ -356,7 +358,6 @@ async def master_otp_fetcher():
         
         temp_logs = []
         
-        # Panel 1
         if res_a:
             data_obj = res_a.get("data", [])
             logs = data_obj.get("otps", []) if isinstance(data_obj, dict) else data_obj
@@ -368,7 +369,6 @@ async def master_otp_fetcher():
                         "service": log.get("operator", log.get("service", "FB"))
                     })
                     
-        # Panel 2
         if res_b and res_b.get("status") == "success":
             for log in res_b.get("data", []):
                 temp_logs.append({
@@ -377,17 +377,12 @@ async def master_otp_fetcher():
                     "service": log.get("cli", "FB")
                 })
                 
-        # Panel 3
         if res_c:
             logs_c = res_c.get("aaData") or res_c.get("data") or []
             for row in logs_c:
-                phone = ""
-                sms = ""
-                cli = "UNKNOWN"
+                phone, sms, cli = "", "", "UNKNOWN"
                 if isinstance(row, list) and len(row) >= 5:
-                    phone = str(row[2]).strip()
-                    cli = str(row[3]).strip()
-                    sms = str(row[4]).strip()
+                    phone, cli, sms = str(row[2]).strip(), str(row[3]).strip(), str(row[4]).strip()
                 elif isinstance(row, dict):
                     phone = str(row.get("destination", row.get("number", "")))
                     sms = str(row.get("message", row.get("sms", "")))
@@ -395,21 +390,14 @@ async def master_otp_fetcher():
                 
                 phone = re.sub(r'<[^>]+>', '', phone).replace("+", "")
                 sms = re.sub(r'<[^>]+>', '', sms)
-                cli = re.sub(r'<[^>]+>', '', cli)
-                if phone and sms:
-                    temp_logs.append({"phone": phone, "sms": sms, "service": cli})
+                if phone and sms: temp_logs.append({"phone": phone, "sms": sms, "service": cli})
         
-        # Panel 4
         if res_d:
             logs_d = res_d.get("aaData") or res_d.get("data") or []
             for row in logs_d:
-                phone = ""
-                sms = ""
-                cli = "UNKNOWN"
+                phone, sms, cli = "", "", "UNKNOWN"
                 if isinstance(row, list) and len(row) >= 5:
-                    phone = str(row[2]).strip()
-                    cli = str(row[3]).strip()
-                    sms = str(row[4]).strip()
+                    phone, cli, sms = str(row[2]).strip(), str(row[3]).strip(), str(row[4]).strip()
                 elif isinstance(row, dict):
                     phone = str(row.get("destination", row.get("number", "")))
                     sms = str(row.get("message", row.get("sms", "")))
@@ -417,9 +405,7 @@ async def master_otp_fetcher():
                 
                 phone = re.sub(r'<[^>]+>', '', phone).replace("+", "")
                 sms = re.sub(r'<[^>]+>', '', sms)
-                cli = re.sub(r'<[^>]+>', '', cli)
-                if phone and sms:
-                    temp_logs.append({"phone": phone, "sms": sms, "service": cli})
+                if phone and sms: temp_logs.append({"phone": phone, "sms": sms, "service": cli})
                     
         CURRENT_OTP_LOGS = temp_logs
         await asyncio.sleep(1.0)
@@ -1351,14 +1337,12 @@ async def send_range_numbers_message(callback_or_msg, range_val: str, limit: int
     else:
         target_message = await callback_or_msg.answer(f"⏳ *Fetching numbers for `{range_val}`...*", parse_mode="Markdown")
 
-    # Sequential Fetching using async gather
-    tasks = [fetch_one_number(range_val) for _ in range(limit)]
-    results = await asyncio.gather(*tasks)
-    
     numbers = []
-    for res in results:
+    for _ in range(limit):
+        res = await fetch_one_number(range_val)
         if res and res not in numbers:
             numbers.append(res)
+        await asyncio.sleep(1.0) 
 
     if not numbers:
         try: await target_message.edit_text(f"❌ Could not fetch numbers for `{range_val}`. Try again.", parse_mode="Markdown")
